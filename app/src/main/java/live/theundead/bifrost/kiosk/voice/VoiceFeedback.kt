@@ -39,8 +39,9 @@ object VoiceFeedback {
         webViewRef = null
     }
 
-    fun setState(state: State) {
-        eval("window.bifrostVoice && window.bifrostVoice.setState('${state.js}')")
+    fun setState(state: State, detail: String? = null) {
+        val arg = detail?.let { ", '${escape(it)}'" } ?: ""
+        eval("window.bifrostVoice && window.bifrostVoice.setState('${state.js}'$arg)")
     }
 
     fun partial(text: String) {

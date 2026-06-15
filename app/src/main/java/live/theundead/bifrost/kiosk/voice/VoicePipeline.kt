@@ -72,9 +72,15 @@ class VoicePipeline(
         // Error when the hub is unreachable (null), or it returned an HTTP error /
         // "didn't understand" with nothing to say (BifrostVoiceClient maps non-2xx
         // to Reply(false, "")).
+        val authError = reply?.authError == true
         val isError = reply == null || (!reply.ok && reply.said.isBlank())
-        if (isError) VoiceFeedback.setState(VoiceFeedback.State.ERROR)
+        if (authError) {
+            VoiceFeedback.setState(VoiceFeedback.State.ERROR, "Voice not authorized — pair this device")
+        } else if (isError) {
+            VoiceFeedback.setState(VoiceFeedback.State.ERROR)
+        }
         val say = when {
+            authError -> "This device isn't authorized for voice. Pair it in settings."
             reply == null -> "Sorry, I couldn't reach the hub."
             reply.said.isNotBlank() -> reply.said
             reply.ok -> "Done."

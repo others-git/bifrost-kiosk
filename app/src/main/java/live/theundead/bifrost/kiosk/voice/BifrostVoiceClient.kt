@@ -26,7 +26,7 @@ class BifrostVoiceClient(
     private val endpointPath: String,
     private val apiKey: String,
 ) {
-    data class Reply(val ok: Boolean, val said: String)
+    data class Reply(val ok: Boolean, val said: String, val authError: Boolean = false)
 
     /** Blocking call — invoke off the main thread. Returns null on transport failure. */
     fun command(text: String, room: String?): Reply? {
@@ -56,7 +56,9 @@ class BifrostVoiceClient(
             val resp = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
             if (code !in 200..299) {
                 Log.w(TAG, "voice command HTTP $code: $resp")
-                return Reply(false, "")
+                // 401/403 mean the device's API key is missing/invalid — surface a
+                // specific "needs (re)pairing" message rather than a generic mishear.
+                return Reply(false, "", authError = code == 401 || code == 403)
             }
             val json = JSONObject(resp)
             Reply(
