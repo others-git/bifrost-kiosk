@@ -50,4 +50,48 @@ class WakeWordTest {
         assertEquals("lights on", WakeWord.parse("jarvis lights on", "jarvis")?.command)
         assertNull(WakeWord.parse("by frost lights on", "jarvis"))
     }
+
+    // ---- Fix 1: tolerant (edit-distance) wake-word matching for unanticipated mishears.
+
+    @Test fun matchesExactBifrost() {
+        assertEquals("", WakeWord.parse("bifrost", "bifrost")?.command)
+    }
+
+    @Test fun matchesSplitByFrost() {
+        // The dominant small-model mishear: "bifrost" → "by frost" (two words).
+        assertEquals("", WakeWord.parse("by frost", "bifrost")?.command)
+    }
+
+    @Test fun matchesByFrostWithCommand() {
+        assertEquals(
+            "turn off the lights",
+            WakeWord.parse("by frost turn off the lights", "bifrost")?.command,
+        )
+    }
+
+    @Test fun matchesBuyFrost() {
+        assertEquals("lights off", WakeWord.parse("buy frost lights off", "bifrost")?.command)
+    }
+
+    @Test fun fuzzyMatchesUnlistedSingleTokenMishear() {
+        // Not in the alias list; "bigfrost" is 1 edit from "bifrost".
+        assertEquals("dim the den", WakeWord.parse("bigfrost dim the den", "bifrost")?.command)
+    }
+
+    @Test fun fuzzyMatchesUnlistedTwoWordMishear() {
+        // "be frosty" collapses to "befrosty", 2 edits from "bifrost"; the whole-word
+        // alias "be frost" won't match here (trailing "y"), so this exercises fuzzy.
+        assertEquals("dim the den", WakeWord.parse("be frosty dim the den", "bifrost")?.command)
+    }
+
+    @Test fun rejectsUnrelatedLeadingWord() {
+        assertNull(WakeWord.parse("turn off the lights", "bifrost"))
+    }
+
+    @Test fun stripWakeRemovesLeadingWakeAndVariants() {
+        assertEquals("turn off the lights", WakeWord.stripWake("bifrost turn off the lights", "bifrost"))
+        assertEquals("turn off the lights", WakeWord.stripWake("by frost turn off the lights", "bifrost"))
+        // No wake word present — return the normalized text unchanged (post-wake remainder).
+        assertEquals("turn off the lights", WakeWord.stripWake("turn off the lights", "bifrost"))
+    }
 }
