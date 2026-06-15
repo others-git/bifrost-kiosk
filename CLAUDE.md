@@ -76,25 +76,28 @@ holds the homophone tolerance ("bifrost" ≈ "by frost"/"be frost", since small 
 Vosk models mishear it), whole-word matching, and politeness stripping. Put voice
 logic worth testing here, not in the engine.
 
-## Bifrost integration — the contract, and its open gap
+## Bifrost integration — the contract
 
 `BifrostVoiceClient` POSTs `{ text, context?: { room } }` to
 `serverBase + voiceEndpoint` (default `/api/voice/command`) and reads
-`{ ok, said }`. This matches Bifrost's **shipped** M23-P1 text→action seam.
+`{ ok, said }` (the server also returns `clauses[]`; we ignore it). This matches
+Bifrost's **shipped** M23-P1 text→action seam.
 
-Two deliberate, documented decisions forced by the current server state:
-- **On-device STT** (Vosk), because the server's audio endpoint
-  `/api/voice/listen` is **not built yet** (Bifrost M23 P2). We transcribe on the
-  tablet and send text.
+Two deliberate decisions:
+- **On-device STT** (Vosk). Bifrost M23 P2 *has now shipped* the server-side
+  audio endpoint `POST /api/voice/listen` (multipart audio → command result), but
+  we stay on-device for now: half-duplex, no upload, no round-trip latency. That
+  endpoint is the swap seam for server-side STT later.
 - **On-device TTS** (Android `TextToSpeech`) reads back `said` — no server audio
   contract needed.
 
-**Open server-side gap:** `/api/voice/command` is currently **session-gated** on
-Bifrost, not Bearer-gated like `/api/v1` + `/mcp`. The client sends
-`Authorization: Bearer <bfr_…>` anyway (forward-compatible). Exposing the voice
-seam under Bearer auth is the one Bifrost-side change needed for the satellite to
-authenticate headlessly — track/coordinate this when touching `../bifrost`
-`src/api/voice.rs`.
+**Auth (resolved).** The voice seam now accepts **either** a browser session
+**or** a `bfr_` Bearer key — `voice_authed()` in `../bifrost` `src/api/voice.rs`
+ORs `require_session` with `require_api_key` (covered by the
+`voice_command_accepts_bearer_api_key` test). So the headless satellite
+authenticates with its minted key, exactly as the client already sends. (As of
+2026-06-15 this lives in an **uncommitted** change in `../bifrost`; confirm it has
+landed before relying on headless auth in the field.)
 
 ## The Vosk model is not in the repo
 

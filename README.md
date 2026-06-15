@@ -86,19 +86,19 @@ root. Everything must work via standard APIs + device-owner (adb-set).
   serves both wake detection and command transcription. Wake word: `bifrost`
   (configurable). The `SpeechEngine` interface keeps openWakeWord/Porcupine
   swappable later.
-- **STT on-device** (not streamed), because Bifrost's audio endpoint
-  `/api/voice/listen` isn't built yet — the tablet transcribes and POSTs **text**
-  to the shipped `/api/voice/command`.
+- **STT on-device** (not streamed). Bifrost's audio endpoint
+  `/api/voice/listen` has since shipped (M23 P2), but the tablet still transcribes
+  locally and POSTs **text** to `/api/voice/command` — half-duplex, no upload.
 - **TTS on-device** (Android `TextToSpeech`) reads back the `said` reply — no
   server audio contract needed.
 - **Kotlin + Views**, single `:app` module, minSdk 26 / target 35.
 - **Half-duplex**: the mic is paused while TTS speaks (resumes after), so the
   recognizer never hears itself — no AEC tuning needed for v1.
 
-### Still open on the **Bifrost** side
-`/api/voice/command` is **session-gated** today; the satellite sends a `bfr_`
-Bearer token (forward-compatible). Exposing the voice seam under Bearer auth
-(like `/api/v1`) is the one server change needed for headless auth. See CLAUDE.md.
+### Bifrost-side auth — resolved
+The voice seam now accepts **either** a browser session **or** a `bfr_` Bearer
+token (like `/api/v1`), so the satellite authenticates headlessly with its minted
+key. Landed in `../bifrost` `src/api/voice.rs` (`voice_authed`). See CLAUDE.md.
 
 ## Tech stack
 Kotlin, Android Views, single Gradle module. No Google Play dependency (tablet is
@@ -117,3 +117,46 @@ the Vosk model (voice idle). To make it the hard kiosk, complete the cutover bel
 then `adb shell dpm set-device-owner live.theundead.bifrost.kiosk/.AdminReceiver`.
 Reach setup any time by long-pressing the screen's **top-right corner** → PIN
 (default `0000`).
+
+### Using a different / custom Vosk model
+
+The engine loads whatever Vosk model sits in
+`app/src/main/assets/model-en-us/` — that directory **is** the contract
+(`VoskSpeechEngine.ASSET_MODEL_DIR`). The code doesn't care *which* model it is,
+only that a standard Vosk layout (`am/`, `conf/`, `graph/`, `ivector/`, …) sits
+**directly inside** it (not nested under the model's own folder). No code change is
+needed to swap models — `Model()` loads by path. Three ways:
+
+1. **A different published model** — point the fetch script at any zip from
+   <https://alphacephei.com/vosk/models>:
+   ```bash
+   rm -rf app/src/main/assets/model-en-us        # script skips a non-empty dir
+   VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip \
+     ./scripts/fetch-vosk-model.sh
+   ```
+2. **Manual / offline** — download + unzip yourself, then copy the **contents** flat:
+   ```bash
+   rm -rf app/src/main/assets/model-en-us && mkdir -p app/src/main/assets/model-en-us
+   cp -r /path/to/vosk-model-xyz/* app/src/main/assets/model-en-us/
+   ```
+3. **A custom-trained model** — same as (2): drop your Kaldi/Vosk model's files
+   into that directory.
+
+Then rebuild (`./gradlew assembleDebug`). Notes when going bigger / custom:
+
+- **Assets stay uncompressed** so Vosk can `mmap` them — `androidResources.noCompress`
+  in `app/build.gradle.kts` lists the standard Vosk extensions
+  (`mdl fst conf int txt carpa ie`). If your model ships other large files that
+  must not be compressed, add their extensions there.
+- **Bigger ≠ free.** Small en-us is ~40MB; the full `vosk-model-en-us-0.22` is
+  ~1.8GB — that bloats the APK past practical install/asset limits and is **too
+  heavy for the Tab A9+** (Snapdragon 695, CPU-only, no NPU). The small /
+  `lgraph` / `gigaspeech`-small class is the realistic ceiling for this tablet;
+  "higher-powered" buys accuracy at a real CPU/RAM/heat cost. Check the
+  real-time-factor on-device (logcat) before trusting it in the field.
+- **Non-English models** change the recognition language, but `WakeWord` is tuned
+  for English homophones of "bifrost" (`WakeWordTest`) — revisit that logic if you
+  swap language.
+- **Want a cleaner asset name** (e.g. `model-de`)? Change `ASSET_MODEL_DIR` in
+  `VoskSpeechEngine.kt` *and* the `DEST` path in `scripts/fetch-vosk-model.sh` to
+  match.

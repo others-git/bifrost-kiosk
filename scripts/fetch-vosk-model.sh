@@ -7,7 +7,10 @@
 # idle (see VoskSpeechEngine).
 set -euo pipefail
 
-MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+# Override the model by exporting VOSK_MODEL_URL (any zip from
+# https://alphacephei.com/vosk/models, or your own). See README "Using a
+# different / custom Vosk model".
+MODEL_URL="${VOSK_MODEL_URL:-https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/app/src/main/assets/model-en-us"
 
 if [ -d "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
@@ -20,9 +23,10 @@ echo "Downloading $MODEL_URL ..."
 wget -q --show-progress "$MODEL_URL" -O "$tmp/model.zip"
 unzip -q "$tmp/model.zip" -d "$tmp"
 mkdir -p "$DEST"
-# The zip contains a single top-level dir; flatten it into assets/model-en-us.
-inner="$(find "$tmp" -maxdepth 1 -type d -name 'vosk-model-*' | head -1)"
+# Vosk zips contain a single top-level dir; flatten it into assets/model-en-us
+# (works for custom VOSK_MODEL_URL zips too — we take the first extracted dir).
+inner="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
 cp -r "$inner"/* "$DEST/"
 rm -rf "$tmp"
 echo "Installed Vosk model into $DEST"
-echo "(~40MB; the APK will grow accordingly.)"
+echo "(the APK will grow by the model size — small en-us is ~40MB.)"

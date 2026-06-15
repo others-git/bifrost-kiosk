@@ -41,6 +41,9 @@ jobs:
       - name: Unit tests
         run: ./gradlew testDebugUnitTest
 
+      - name: Fetch Vosk model
+        run: ./scripts/fetch-vosk-model.sh
+
       - name: Assemble release APK (unsigned)
         run: ./gradlew assembleRelease
 

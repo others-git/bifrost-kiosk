@@ -11,13 +11,15 @@ import java.net.URL
  *
  * Posts to the **shipped** `POST /api/voice/command { text, context? }`
  * (Bifrost M23 P1), which returns `{ ok, said, clauses[] }`. We send transcribed
- * text (STT happens on-device, since the server-side `/api/voice/listen` audio
- * endpoint is not built yet — Bifrost M23 P2). `said` is read back via TTS.
+ * text (STT happens on-device via Vosk). Bifrost M23 P2 also shipped a
+ * server-side `POST /api/voice/listen` multipart-audio endpoint; we stay on
+ * on-device STT for now (half-duplex, no upload), but that seam is the path to
+ * server-side STT later. `said` is read back via TTS.
  *
- * Auth: a `bfr_` Bearer key, matching `/api/v1` + `/mcp`. Note the current
- * `/api/voice/command` is *session*-gated on the server; sending Bearer is
- * forward-compatible for when the voice surface is exposed under bearer auth
- * (tracked in CLAUDE.md as the open server-side contract item).
+ * Auth: a `bfr_` Bearer key, matching `/api/v1` + `/mcp`. The voice seam now
+ * accepts **either** a browser session **or** a `bfr_` Bearer key server-side
+ * (`voice_authed` in `../bifrost` `src/api/voice.rs`), so the headless satellite
+ * authenticates with its minted key like any public-API client.
  */
 class BifrostVoiceClient(
     private val serverBase: String,
