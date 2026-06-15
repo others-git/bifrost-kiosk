@@ -1,20 +1,54 @@
 package live.theundead.bifrost.kiosk
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import live.theundead.bifrost.kiosk.databinding.ActivitySettingsBinding
 import live.theundead.bifrost.kiosk.voice.VoiceService
+import org.json.JSONObject
+import kotlin.concurrent.thread
 
 /**
  * PIN-gated maintenance screen (reached by long-pressing the kiosk's top-right
  * corner). Lets an operator re-point the dashboard/server, provision the API
  * key, tune the wake word, and temporarily drop lock-task for servicing.
+ *
+ * Provisioning the hardest field (the 68-char `bfr_` key) is done hands-free by
+ * **scanning the dashboard's pairing QR** — that single scan configures the
+ * server, the dashboard URL, and the API key in one shot.
  */
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var prefs: Prefs
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Launches the ZXing (FOSS, no Play-services) QR scanner and returns its text. */
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents.isNullOrBlank()) {
+            // User cancelled (back/volume) — say nothing noisy.
+            return@registerForActivityResult
+        }
+        handleScannedPayload(contents)
+    }
+
+    private val cameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) launchScanner()
+            else toast("Camera permission is required to scan the pairing QR")
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,6 +72,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         binding.saveButton.setOnClickListener { save() }
+        binding.scanQrButton.setOnClickListener { startScanFlow() }
         binding.exitLockButton.setOnClickListener {
             LockTask.stop(this)
             Toast.makeText(this, "Lock-task released for maintenance", Toast.LENGTH_LONG).show()
@@ -61,5 +96,90 @@ class SettingsActivity : AppCompatActivity() {
         // Relaunch the kiosk so the new URL/policies take hold.
         startActivity(packageManager.getLaunchIntentForPackage(packageName))
         finish()
+    }
+
+    // --- Pairing-QR scan → redeem → save → reload --------------------------
+
+    /** Ensure camera permission, then launch the scanner. */
+    private fun startScanFlow() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            launchScanner()
+        } else {
+            // Device-owner deployments may have auto-granted this already; if not,
+            // ask at runtime (the device owner can also pre-grant silently).
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchScanner() {
+        val options = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt(getString(R.string.scan_prompt))
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }
+        scanLauncher.launch(options)
+    }
+
+    /**
+     * Parse `{ "v":1, "base_url":..., "token":... }` and redeem it. Lenient about
+     * unknown `v`; only `base_url` + `token` are required.
+     */
+    private fun handleScannedPayload(payload: String) {
+        val baseUrl: String
+        val token: String
+        try {
+            val json = JSONObject(payload)
+            baseUrl = json.optString("base_url").trim()
+            token = json.optString("token").trim()
+        } catch (e: Exception) {
+            Log.w(TAG, "QR payload was not pairing JSON", e)
+            toast("That QR isn't a Bifrost pairing code")
+            return
+        }
+        if (baseUrl.isBlank() || token.isBlank()) {
+            toast("That QR isn't a Bifrost pairing code")
+            return
+        }
+
+        toast("Pairing…")
+        val deviceName = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Bifrost Kiosk"
+        thread {
+            val result = EnrollmentClient(baseUrl).redeem(token, deviceName)
+            mainHandler.post { onRedeemResult(baseUrl, result) }
+        }
+    }
+
+    private fun onRedeemResult(baseUrl: String, result: EnrollmentClient.Result) {
+        when (result) {
+            is EnrollmentClient.Result.Success -> {
+                // One scan configures everything: the QR's base_url is the Bifrost
+                // origin for both the dashboard and the voice/API server.
+                prefs.apiKey = result.key
+                prefs.serverBase = baseUrl
+                prefs.dashboardUrl = baseUrl
+
+                binding.apiKey.setText(prefs.apiKey)
+                binding.serverBase.setText(prefs.serverBase)
+                binding.dashboardUrl.setText(prefs.dashboardUrl)
+
+                toast("Paired ✓")
+                // Relaunch the kiosk so the WebView loads against the new server.
+                startActivity(packageManager.getLaunchIntentForPackage(packageName))
+                finish()
+            }
+            EnrollmentClient.Result.Invalid ->
+                toast("Pairing code invalid or expired — show a fresh QR")
+            is EnrollmentClient.Result.Error ->
+                toast(result.message)
+        }
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    companion object {
+        private const val TAG = "SettingsActivity"
     }
 }

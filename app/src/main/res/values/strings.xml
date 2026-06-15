@@ -11,6 +11,9 @@
     <string name="exit_pin">Maintenance PIN</string>
     <string name="enable_voice">Enable voice satellite</string>
 
+    <string name="scan_pairing_qr">Scan pairing QR</string>
+    <string name="scan_prompt">Point at the Bifrost \"Pair a device\" QR</string>
+
     <string name="save">Save &amp; relaunch kiosk</string>
     <string name="exit_lock">Exit lock-task (maintenance)</string>
     <string name="enter_pin">Enter maintenance PIN</string>

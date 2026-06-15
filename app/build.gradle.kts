@@ -54,6 +54,11 @@ dependencies {
     // Model is loaded from assets at runtime; see scripts/fetch-vosk-model.sh.
     implementation("com.alphacephei:vosk-android:0.3.47")
 
+    // QR scanner for device pairing. ZXing (Apache-2.0), pure-FOSS, works fully
+    // offline — NO Google Play Services / ML Kit, so it's safe on the de-Googled
+    // tablet. Used only by the maintenance-screen "Scan pairing QR" action.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     testImplementation("junit:junit:4.13.2")
     // Real org.json so unit tests exercise grammar/vocab JSON (the android.jar
     // stub throws "not mocked"); production uses the framework's bundled copy.
