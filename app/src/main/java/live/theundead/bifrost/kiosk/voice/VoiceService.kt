@@ -27,12 +27,16 @@ class VoiceService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundNotification()
-
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(TAG, "no RECORD_AUDIO permission — stopping voice service")
+        // A microphone-type FGS requires RECORD_AUDIO to already be granted
+        // (Android 14+), so decide the type *before* startForeground — calling it
+        // with TYPE_MICROPHONE ungranted throws and crashes the whole app. As a
+        // soft kiosk (not device owner) we can't self-grant, so degrade
+        // gracefully: come up untyped and stop, leaving the kiosk untouched.
+        val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        startForegroundNotification(hasMic)
+        if (!hasMic) {
+            Log.w(TAG, "no RECORD_AUDIO permission — voice idle (kiosk unaffected)")
             stopSelf()
             return
         }
@@ -49,20 +53,24 @@ class VoiceService : LifecycleService() {
         return null
     }
 
-    private fun startForegroundNotification() {
+    private fun startForegroundNotification(micGranted: Boolean) {
         val tap = android.app.PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             android.app.PendingIntent.FLAG_IMMUTABLE,
         )
+        val listeningFor = if (micGranted) "Listening for “${Prefs(this).wakeWord}”" else "Voice off"
         val notification = NotificationCompat.Builder(this, KioskApp.VOICE_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("Listening for “${Prefs(this).wakeWord}”")
+            .setContentText(listeningFor)
             .setSmallIcon(R.drawable.ic_launcher)
             .setOngoing(true)
             .setContentIntent(tap)
             .build()
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // Only claim the microphone type when we actually hold RECORD_AUDIO;
+        // otherwise come up as an untyped FGS (TYPE_NONE) — still satisfies the
+        // startForegroundService() contract without tripping the type check.
+        val type = if (micGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         } else {
             0

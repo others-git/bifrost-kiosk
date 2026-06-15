@@ -28,5 +28,16 @@ mkdir -p "$DEST"
 inner="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
 cp -r "$inner"/* "$DEST/"
 rm -rf "$tmp"
+
+# Vosk's StorageService.unpack (used for the bundled-asset path) reads a `uuid`
+# file in the model dir as a version marker to copy the model out of assets into
+# internal storage; raw alphacephei models don't ship one, so without it unpack
+# throws FileNotFoundException and voice stays dead. Generate a stable id per
+# fetch (a different model → new id → the device re-syncs). The external "BYO"
+# path loads via Model(path) directly and doesn't need this.
+if [ ! -f "$DEST/uuid" ]; then
+    (cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N) > "$DEST/uuid"
+fi
+
 echo "Installed Vosk model into $DEST"
 echo "(the APK will grow by the model size — small en-us is ~40MB.)"
