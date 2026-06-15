@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
 class VoicePipeline(
     context: Context,
     private val prefs: Prefs,
-    private val engine: SpeechEngine = VoskSpeechEngine(context),
+    private val engine: SpeechEngine = VoskSpeechEngine(context, prefs),
     private val tts: TtsPlayer = TtsPlayer(context),
     private val scheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(1),
 ) : SpeechEngine.Listener {

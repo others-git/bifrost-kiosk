@@ -55,6 +55,9 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json so unit tests exercise grammar/vocab JSON (the android.jar
+    // stub throws "not mocked"); production uses the framework's bundled copy.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }
