@@ -15,6 +15,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import live.theundead.bifrost.kiosk.databinding.ActivityMainBinding
+import live.theundead.bifrost.kiosk.voice.VoiceFeedback
 import live.theundead.bifrost.kiosk.voice.VoiceService
 
 /**
@@ -42,6 +43,9 @@ class MainActivity : AppCompatActivity() {
         LockTask.configurePolicies(this)
         configureWebView()
         binding.webview.loadUrl(prefs.dashboardUrl)
+        // Share the WebView with the voice pipeline so it can drive the on-screen
+        // voice overlay (window.bifrostVoice). Same process as VoiceService.
+        VoiceFeedback.attach(binding.webview)
 
         // Maintenance hatch: long-press the corner → PIN → setup screen.
         binding.maintenanceHandle.setOnLongClickListener {
@@ -122,6 +126,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        VoiceFeedback.detach()
         binding.webview.destroy()
         super.onDestroy()
     }

@@ -31,7 +31,10 @@ class VoskSpeechEngine(private val context: Context) : SpeechEngine {
     private var started = false
 
     private val recognitionListener = object : RecognitionListener {
-        override fun onPartialResult(hypothesis: String?) {}
+        override fun onPartialResult(hypothesis: String?) {
+            val text = hypothesis?.let { JSONObject(it).optString("partial", "") }.orEmpty()
+            if (text.isNotBlank()) listener?.onPartial(text)
+        }
 
         override fun onResult(hypothesis: String?) {
             val text = hypothesis?.let { JSONObject(it).optString("text", "") }.orEmpty()

@@ -7,8 +7,11 @@ package live.theundead.bifrost.kiosk.voice
  */
 interface SpeechEngine {
     /** Emits a finalized transcript for one utterance (silence-bounded). */
-    fun interface Listener {
+    interface Listener {
         fun onTranscript(text: String)
+
+        /** Live (non-finalized) hypothesis as the utterance is spoken. */
+        fun onPartial(text: String) {}
     }
 
     /** Begin continuous recognition. Safe to call once. */
