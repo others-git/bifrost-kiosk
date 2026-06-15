@@ -1,0 +1,22 @@
+# Gradle / Android build outputs
+.gradle/
+build/
+*/build/
+local.properties
+
+# Vosk model is fetched, never committed (tens of MB) — see scripts/fetch-vosk-model.sh
+app/src/main/assets/model-en-us/
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+captures/
+
+# Signing
+*.keystore
+*.jks
+keystore.properties
+
+# OS
+.DS_Store

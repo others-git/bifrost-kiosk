@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Bifrost Kiosk</string>
+    <string name="settings_title">Bifrost Kiosk — Setup</string>
+
+    <string name="dashboard_url">Dashboard URL</string>
+    <string name="server_base">Bifrost server base URL</string>
+    <string name="api_key">API key (Bearer)</string>
+    <string name="voice_endpoint">Voice command path</string>
+    <string name="wake_word">Wake word</string>
+    <string name="room_context">Room context</string>
+    <string name="exit_pin">Maintenance PIN</string>
+    <string name="enable_voice">Enable voice satellite</string>
+
+    <string name="save">Save &amp; relaunch kiosk</string>
+    <string name="exit_lock">Exit lock-task (maintenance)</string>
+    <string name="enter_pin">Enter maintenance PIN</string>
+    <string name="wrong_pin">Wrong PIN</string>
+</resources>
