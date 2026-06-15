@@ -145,7 +145,7 @@ class VoskSpeechEngine(
         worker.execute {
             if (!started) return@execute
             val words = VocabularyClient(prefs.serverBase, prefs.apiKey).fetch() ?: return@execute
-            val grammar = buildGrammar(words)
+            val grammar = buildGrammar(words, prefs.wakeWord)
             if (grammar != currentGrammar) {
                 Log.i(TAG, "vocabulary changed — rebuilding recognizer (${words.size} words)")
                 buildRecognizer(words)
@@ -164,7 +164,7 @@ class VoskSpeechEngine(
         speechService = null
         runCatching {
             val recognizer = if (words != null) {
-                val grammar = buildGrammar(words)
+                val grammar = buildGrammar(words, prefs.wakeWord)
                 currentGrammar = grammar
                 Log.i(TAG, "Vosk grammar: ${words.size} words")
                 Recognizer(m, SAMPLE_RATE, grammar)
@@ -216,11 +216,17 @@ class VoskSpeechEngine(
          * Build a Vosk grammar string from [words]: a JSON array of the allowed
          * words plus the `[unk]` out-of-vocabulary token, so non-command audio
          * maps to "unknown" instead of being force-fit to a command word.
+         *
+         * We also inject the wake word's homophone tokens ([WakeWord.grammarTokens]).
+         * The small model has no dictionary entry for "bifrost" and instead hears
+         * it as "by frost", so without "by"/"frost" in the grammar the wake word
+         * becomes unrecognizable; the injected tokens let the model emit a
+         * rendering the [WakeWord] alias matcher maps back to the wake word.
          */
-        fun buildGrammar(words: List<String>): String {
+        fun buildGrammar(words: List<String>, wakeWord: String): String {
             val arr = JSONArray()
-            // Dedupe defensively; the client already lowercases/trims.
-            for (w in words.distinct()) arr.put(w)
+            val all = (words + WakeWord.grammarTokens(wakeWord)).distinct()
+            for (w in all) arr.put(w)
             arr.put(UNK_TOKEN)
             return arr.toString()
         }

@@ -27,6 +27,35 @@ object WakeWord {
     data class Match(val command: String)
 
     /**
+     * All recognized renderings of [wakeWord]: the (normalized) wake word itself
+     * plus its known homophone aliases (only "bifrost" has a curated alias list
+     * today). These are the whole-phrase forms the matcher accepts.
+     */
+    fun aliasesFor(wakeWord: String): List<String> {
+        val wake = normalize(wakeWord)
+        if (wake.isEmpty()) return emptyList()
+        return buildList {
+            add(wake)
+            if (wake == "bifrost") addAll(BIFROST_ALIASES)
+        }.filter { it.isNotEmpty() }.distinct()
+    }
+
+    /**
+     * The individual lowercase word tokens the speech model must be allowed to
+     * emit so the wake word stays recognizable under a constrained grammar. The
+     * small Vosk model has no dictionary entry for "bifrost" and instead hears it
+     * as "by frost" — so a grammar that contains "bifrost" but not "by"/"frost"
+     * makes the wake word unrecognizable. We flatten every alias (e.g. "by frost",
+     * "buy frost") into its constituent tokens, deduped, so the model can produce
+     * a rendering the alias matcher in [parse] maps back to the wake word.
+     */
+    fun grammarTokens(wakeWord: String): List<String> =
+        aliasesFor(wakeWord)
+            .flatMap { it.split(' ') }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+    /**
      * @return a [Match] with the text after the wake word (possibly empty for a
      * bare wake, meaning "listening, awaiting command"), or null if the wake word
      * is absent.
@@ -38,10 +67,7 @@ object WakeWord {
         val wake = normalize(wakeWord)
         if (wake.isEmpty()) return null
 
-        val aliases = buildList {
-            add(wake)
-            if (wake == "bifrost") addAll(BIFROST_ALIASES)
-        }.filter { it.isNotEmpty() }.distinct()
+        val aliases = aliasesFor(wakeWord)
 
         // Fast path: an exact (whole-word) alias hit anywhere. Prefer the earliest
         // so everything after it is the command. This keeps homophones working even

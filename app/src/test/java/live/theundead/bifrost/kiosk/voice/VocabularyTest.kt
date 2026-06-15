@@ -45,15 +45,17 @@ class VocabularyTest {
 
     @Test
     fun grammar_is_json_array_of_words_plus_unk() {
-        val grammar = VoskSpeechEngine.buildGrammar(listOf("turn", "off", "lights"))
+        // A custom wake word with no homophone aliases injects only its own token,
+        // so the rest of the array is exactly the supplied words.
+        val grammar = VoskSpeechEngine.buildGrammar(listOf("turn", "off", "lights"), "jarvis")
         val arr = JSONArray(grammar)
         val parsed = (0 until arr.length()).map { arr.getString(it) }
-        assertEquals(listOf("turn", "off", "lights", VoskSpeechEngine.UNK_TOKEN), parsed)
+        assertEquals(listOf("turn", "off", "lights", "jarvis", VoskSpeechEngine.UNK_TOKEN), parsed)
     }
 
     @Test
     fun grammar_always_includes_unk_token() {
-        val grammar = VoskSpeechEngine.buildGrammar(emptyList())
+        val grammar = VoskSpeechEngine.buildGrammar(emptyList(), "")
         val arr = JSONArray(grammar)
         assertEquals(1, arr.length())
         assertEquals(VoskSpeechEngine.UNK_TOKEN, arr.getString(0))
@@ -61,10 +63,32 @@ class VocabularyTest {
 
     @Test
     fun grammar_dedupes_words() {
-        val grammar = VoskSpeechEngine.buildGrammar(listOf("lights", "lights", "off"))
+        val grammar = VoskSpeechEngine.buildGrammar(listOf("lights", "lights", "off"), "")
         val arr = JSONArray(grammar)
         val parsed = (0 until arr.length()).map { arr.getString(it) }
         assertEquals(listOf("lights", "off", VoskSpeechEngine.UNK_TOKEN), parsed)
+    }
+
+    @Test
+    fun grammar_injects_wake_word_homophone_tokens() {
+        // The small model has no "bifrost" entry and hears it as "by frost"; the
+        // grammar must contain the homophone tokens so the wake word survives the
+        // constraint. The literal "bifrost" token is included too (harmless if OOV).
+        val grammar = VoskSpeechEngine.buildGrammar(listOf("turn", "off", "lights"), "bifrost")
+        val arr = JSONArray(grammar)
+        val parsed = (0 until arr.length()).map { arr.getString(it) }
+        for (token in listOf("by", "frost", "buy", "bi", "be", "bifrost")) {
+            assertTrue("grammar missing wake token '$token'", parsed.contains(token))
+        }
+    }
+
+    @Test
+    fun grammar_does_not_duplicate_wake_tokens_already_present() {
+        // If the server vocabulary already supplies a wake token, injection dedupes it.
+        val grammar = VoskSpeechEngine.buildGrammar(listOf("frost", "lights"), "bifrost")
+        val arr = JSONArray(grammar)
+        val parsed = (0 until arr.length()).map { arr.getString(it) }
+        assertEquals(1, parsed.count { it == "frost" })
     }
 
     @Test
@@ -76,7 +100,7 @@ class VocabularyTest {
         ).toString()
         val words = VocabularyClient.parseWords(body)!!
         assertTrue(words.contains("bifrost"))
-        val grammar = VoskSpeechEngine.buildGrammar(words)
+        val grammar = VoskSpeechEngine.buildGrammar(words, "bifrost")
         assertTrue(grammar.contains("\"office\""))
         assertTrue(grammar.contains(VoskSpeechEngine.UNK_TOKEN))
     }

@@ -2,6 +2,7 @@ package live.theundead.bifrost.kiosk.voice
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WakeWordTest {
@@ -93,5 +94,40 @@ class WakeWordTest {
         assertEquals("turn off the lights", WakeWord.stripWake("by frost turn off the lights", "bifrost"))
         // No wake word present — return the normalized text unchanged (post-wake remainder).
         assertEquals("turn off the lights", WakeWord.stripWake("turn off the lights", "bifrost"))
+    }
+
+    // ---- Grammar token exposure: the wake word must stay recognizable under a
+    // constrained Vosk grammar, so the homophone word tokens are injected.
+
+    @Test fun grammarTokensIncludeBifrostHomophoneWords() {
+        val tokens = WakeWord.grammarTokens("bifrost")
+        // The split words the small model actually emits for "bifrost".
+        for (t in listOf("by", "frost", "buy", "bi", "be", "bifrost")) {
+            assertTrue("missing token '$t'", tokens.contains(t))
+        }
+    }
+
+    @Test fun grammarTokensAreDedupedLowercaseSingleWords() {
+        val tokens = WakeWord.grammarTokens("bifrost")
+        assertEquals(tokens.distinct(), tokens)
+        assertTrue(tokens.none { it.contains(' ') })
+        assertTrue(tokens.all { it == it.lowercase() })
+    }
+
+    @Test fun grammarTokensForCustomWakeWordAreItsOwnTokens() {
+        // No curated homophones for a custom word: at least its own token is present.
+        assertEquals(listOf("jarvis"), WakeWord.grammarTokens("jarvis"))
+        assertEquals(listOf("hey", "computer"), WakeWord.grammarTokens("Hey Computer"))
+    }
+
+    @Test fun grammarTokensEmptyForBlankWakeWord() {
+        assertTrue(WakeWord.grammarTokens("").isEmpty())
+    }
+
+    @Test fun aliasesForBifrostIncludeKnownRenderings() {
+        val aliases = WakeWord.aliasesFor("bifrost")
+        assertTrue(aliases.contains("bifrost"))
+        assertTrue(aliases.contains("by frost"))
+        assertTrue(aliases.contains("buy frost"))
     }
 }
