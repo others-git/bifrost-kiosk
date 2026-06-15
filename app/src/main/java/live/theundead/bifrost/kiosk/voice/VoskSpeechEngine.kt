@@ -16,10 +16,12 @@ import java.io.File
  * the wake-word gating in [WakeWord], so the same recognizer serves both
  * "listen for 'bifrost'" and "capture the command".
  *
- * The acoustic model is **not** bundled in the APK by default (it is tens of MB).
- * Drop it in `app/src/main/assets/$ASSET_MODEL_DIR` (see
- * scripts/fetch-vosk-model.sh); without it the engine stays idle and the rest of
- * the app is unaffected — graceful degradation, per the M23 voice constraints.
+ * The model can come from three places (precedence in [ModelResolver]): a model
+ * **pushed** to the app's external dir (`getExternalFilesDir/$ASSET_MODEL_DIR`,
+ * "bring your own model" — no rebuild), the **internal** unpacked cache, or the
+ * model **bundled** in the APK assets (see scripts/fetch-vosk-model.sh). With
+ * none of them the engine stays idle and the rest of the app is unaffected —
+ * graceful degradation, per the M23 voice constraints.
  */
 class VoskSpeechEngine(private val context: Context) : SpeechEngine {
 
@@ -50,22 +52,45 @@ class VoskSpeechEngine(private val context: Context) : SpeechEngine {
         if (started) return
         started = true
 
-        val ready = File(context.filesDir, UNPACKED_DIR)
-        if (ready.exists() && (ready.list()?.isNotEmpty() == true)) {
-            initFrom(ready.absolutePath)
-            return
+        val internal = File(context.filesDir, UNPACKED_DIR)
+        val external = context.getExternalFilesDir(null)?.let { File(it, ASSET_MODEL_DIR) }
+
+        when (
+            ModelResolver.resolve(
+                externalPresent = external.isNonEmptyDir(),
+                externalMtime = external?.lastModified() ?: 0L,
+                internalPresent = internal.isNonEmptyDir(),
+                internalMtime = internal.lastModified(),
+                assetPresent = hasAssetModel(),
+            )
+        ) {
+            // BYO: mirror the pushed model onto internal storage (so Vosk can mmap
+            // a real filesystem, not FUSE-backed external) and load it.
+            ModelSource.EXTERNAL -> {
+                runCatching { mirror(external!!, internal) }
+                    .onFailure { Log.e(TAG, "mirroring pushed model failed", it) }
+                initFrom(internal.absolutePath)
+            }
+            ModelSource.INTERNAL -> initFrom(internal.absolutePath)
+            // Unpack the bundled asset model into internal storage, then run (async).
+            ModelSource.ASSET -> StorageService.unpack(
+                context, ASSET_MODEL_DIR, UNPACKED_DIR,
+                { m -> model = m; runRecognizer() },
+                { e -> Log.e(TAG, "model unpack failed", e) },
+            )
+            ModelSource.NONE ->
+                Log.w(TAG, "no Vosk model (pushed, cached, or bundled) — voice idle")
         }
-        // Unpack the bundled asset model (if any) into internal storage, then run.
-        if (!hasAssetModel()) {
-            Log.w(TAG, "no Vosk model in assets/$ASSET_MODEL_DIR — voice idle")
-            return
-        }
-        StorageService.unpack(
-            context, ASSET_MODEL_DIR, UNPACKED_DIR,
-            { m -> model = m; runRecognizer() },
-            { e -> Log.e(TAG, "model unpack failed", e) },
-        )
     }
+
+    /** Replace [dst] with a fresh copy of [src] (used to mirror a pushed model). */
+    private fun mirror(src: File, dst: File) {
+        if (dst.exists()) dst.deleteRecursively()
+        src.copyRecursively(dst, overwrite = true)
+    }
+
+    private fun File?.isNonEmptyDir(): Boolean =
+        this != null && isDirectory && (list()?.isNotEmpty() == true)
 
     private fun initFrom(path: String) {
         runCatching { model = Model(path); runRecognizer() }

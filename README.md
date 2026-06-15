@@ -118,38 +118,64 @@ then `adb shell dpm set-device-owner live.theundead.bifrost.kiosk/.AdminReceiver
 Reach setup any time by long-pressing the screen's **top-right corner** → PIN
 (default `0000`).
 
-### Using a different / custom Vosk model
+### Which release APK?
 
-The engine loads whatever Vosk model sits in
-`app/src/main/assets/model-en-us/` — that directory **is** the contract
-(`VoskSpeechEngine.ASSET_MODEL_DIR`). The code doesn't care *which* model it is,
-only that a standard Vosk layout (`am/`, `conf/`, `graph/`, `ivector/`, …) sits
-**directly inside** it (not nested under the model's own folder). No code change is
-needed to swap models — `Model()` loads by path. Three ways:
+Each [GitHub release](../../releases) ships **two** APKs:
 
-1. **A different published model** — point the fetch script at any zip from
-   <https://alphacephei.com/vosk/models>:
-   ```bash
-   rm -rf app/src/main/assets/model-en-us        # script skips a non-empty dir
-   VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip \
-     ./scripts/fetch-vosk-model.sh
-   ```
-2. **Manual / offline** — download + unzip yourself, then copy the **contents** flat:
-   ```bash
-   rm -rf app/src/main/assets/model-en-us && mkdir -p app/src/main/assets/model-en-us
-   cp -r /path/to/vosk-model-xyz/* app/src/main/assets/model-en-us/
-   ```
-3. **A custom-trained model** — same as (2): drop your Kaldi/Vosk model's files
-   into that directory.
+| Artifact | Size | Voice | Use it when |
+|---|---|---|---|
+| `app-release.apk` | ~108MB | **works out of the box** (small en-us model bundled) | the normal choice — flash it and go |
+| `app-release-slim.apk` | ~40MB | idle until you supply a model | you want a **different/custom model** without rebuilding (see BYO below), or don't need voice |
 
-Then rebuild (`./gradlew assembleDebug`). Notes when going bigger / custom:
+Both are otherwise identical. The kiosk works on either; only on-device voice
+differs.
+
+### Bring your own model (BYO)
+
+The engine picks a model from the first of these that exists (see
+`ModelResolver`): a model you **pushed to the device** → the **bundled** asset →
+idle. So there are two ways to run a model that isn't the bundled default — and
+the pushed one wins, so it also overrides the bundled model **without a rebuild**.
+
+A Vosk model is just a folder with a standard layout (`am/`, `conf/`, `graph/`,
+`ivector/`, …). Grab one from <https://alphacephei.com/vosk/models> or train your
+own; the app only cares that those subfolders sit **directly inside** the model
+dir (not nested under the model's own name folder).
+
+**Path A — push to the device (no rebuild; works on the slim *or* bundled APK):**
+```bash
+# 1. install the slim APK (or use the bundled one to override its model)
+adb install app-release-slim.apk
+# 2. push any Vosk model's CONTENTS into the app's external dir
+adb push my-vosk-model/. \
+  /sdcard/Android/data/live.theundead.bifrost.kiosk/files/model-en-us/
+# 3. restart the app — it mirrors the model to internal storage and loads it
+adb shell am force-stop live.theundead.bifrost.kiosk
+```
+No root, no permission, no re-signing — the app-specific external dir is writable
+over adb. Re-push a newer model any time; the engine re-mirrors when it changes.
+
+**Path B — bake it into the APK (build from source):**
+```bash
+source scripts/env.sh
+rm -rf app/src/main/assets/model-en-us        # the fetch script skips a non-empty dir
+VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip \
+  ./scripts/fetch-vosk-model.sh               # or copy a model's contents in by hand
+./gradlew assembleRelease
+```
+`app/src/main/assets/model-en-us/` is the bundled-model contract
+(`VoskSpeechEngine.ASSET_MODEL_DIR`); whatever lands there is packaged. No code
+change needed — `Model()` loads by path.
+
+**Notes when going bigger / custom (either path):**
 
 - **Assets stay uncompressed** so Vosk can `mmap` them — `androidResources.noCompress`
   in `app/build.gradle.kts` lists the standard Vosk extensions
-  (`mdl fst conf int txt carpa ie`). If your model ships other large files that
-  must not be compressed, add their extensions there.
+  (`mdl fst conf int txt carpa ie`). If a *bundled* model ships other large files
+  that must not be compressed, add their extensions there. (Pushed models live on
+  the filesystem, so this only affects Path B.)
 - **Bigger ≠ free.** Small en-us is ~40MB; the full `vosk-model-en-us-0.22` is
-  ~1.8GB — that bloats the APK past practical install/asset limits and is **too
+  ~1.8GB — that bloats a bundled APK past practical install limits and is **too
   heavy for the Tab A9+** (Snapdragon 695, CPU-only, no NPU). The small /
   `lgraph` / `gigaspeech`-small class is the realistic ceiling for this tablet;
   "higher-powered" buys accuracy at a real CPU/RAM/heat cost. Check the
@@ -157,6 +183,3 @@ Then rebuild (`./gradlew assembleDebug`). Notes when going bigger / custom:
 - **Non-English models** change the recognition language, but `WakeWord` is tuned
   for English homophones of "bifrost" (`WakeWordTest`) — revisit that logic if you
   swap language.
-- **Want a cleaner asset name** (e.g. `model-de`)? Change `ASSET_MODEL_DIR` in
-  `VoskSpeechEngine.kt` *and* the `DEST` path in `scripts/fetch-vosk-model.sh` to
-  match.

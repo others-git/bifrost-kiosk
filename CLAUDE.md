@@ -108,6 +108,14 @@ into `app/src/main/assets/model-en-us/`, gitignored) before building. The APK
 grows accordingly. `androidResources.noCompress` keeps the model uncompressed so
 Vosk can mmap it.
 
+**Model load order at runtime** (`ModelResolver`, pure + unit-tested): a model
+**pushed** to the app's external dir (`getExternalFilesDir/model-en-us`, "BYO" —
+mirrored to internal then loaded, and it **overrides** a bundled model) → the
+**internal** unpacked cache → the **bundled** asset → idle. This is why every
+release ships **two** APKs (`release.yml`): `app-release.apk` (model bundled,
+~108MB, the default) and `app-release-slim.apk` (no model, BYO via `adb push`).
+See README "Which release APK?" / "Bring your own model".
+
 ## Decisions locked (were README "Open questions")
 
 Kotlin + **Views** (not Compose); single `:app` module; **minSdk 26 / target 35**;

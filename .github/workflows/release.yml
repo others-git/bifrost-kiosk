@@ -41,13 +41,28 @@ jobs:
       - name: Unit tests
         run: ./gradlew testDebugUnitTest
 
+      # Build slim first (no model), stash it, then add the model and build the
+      # bundled variant — two artifacts per release (see README "Which APK").
+      - name: Assemble slim release APK (no model)
+        run: |
+          set -euo pipefail
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release-unsigned.apk slim-unsigned.apk
+
       - name: Fetch Vosk model
         run: ./scripts/fetch-vosk-model.sh
 
-      - name: Assemble release APK (unsigned)
-        run: ./gradlew assembleRelease
+      - name: Assemble bundled release APK (with model)
+        run: |
+          set -euo pipefail
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release-unsigned.apk bundled-unsigned.apk
+          # Guard against Gradle reusing the slim package: the model must be in there.
+          slim=$(stat -c%s slim-unsigned.apk); bundled=$(stat -c%s bundled-unsigned.apk)
+          echo "slim=${slim} bundled=${bundled} bytes"
+          [ "$bundled" -gt "$slim" ] || { echo "::error::bundled APK is not larger than slim — model was not packaged"; exit 1; }
 
-      - name: Sign APK
+      - name: Sign APKs
         id: sign
         env:
           KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
@@ -57,8 +72,6 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
-          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
-          OUT="app-release.apk"
 
           if [ -n "${KEYSTORE_BASE64:-}" ]; then
             echo "Signing with the provided release keystore."
@@ -74,14 +87,21 @@ jobs:
               -dname "CN=Bifrost Kiosk, OU=Bifrost, O=theundead.live, C=US"
           fi
 
-          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED" aligned.apk
-          "$BUILD_TOOLS/apksigner" sign \
-            --ks release.jks --ks-pass "pass:$KEYSTORE_PASSWORD" \
-            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" \
-            --out "$OUT" aligned.apk
-          "$BUILD_TOOLS/apksigner" verify --print-certs "$OUT"
-          rm -f release.jks aligned.apk
-          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          sign() {  # $1 = unsigned in, $2 = signed out
+            "$BUILD_TOOLS/zipalign" -p -f 4 "$1" aligned.apk
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks release.jks --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" \
+              --out "$2" aligned.apk
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$2"
+            rm -f aligned.apk
+          }
+
+          sign bundled-unsigned.apk app-release.apk
+          sign slim-unsigned.apk app-release-slim.apk
+          rm -f release.jks
+          echo "bundled=app-release.apk" >> "$GITHUB_OUTPUT"
+          echo "slim=app-release-slim.apk" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -89,4 +109,6 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
-          files: ${{ steps.sign.outputs.apk }}
+          files: |
+            ${{ steps.sign.outputs.bundled }}
+            ${{ steps.sign.outputs.slim }}
