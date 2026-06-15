@@ -92,6 +92,10 @@ class MainActivity : AppCompatActivity() {
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            // Mark this WebView as the kiosk so the Bifrost web app can hide
+            // controls that don't belong on a wall fixture (e.g. Sign out — a
+            // kiosk is deauthed remotely by the controller, never by a passerby).
+            settings.userAgentString = "${settings.userAgentString} BifrostKiosk/${BuildConfig.VERSION_NAME}"
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true

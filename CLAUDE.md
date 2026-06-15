@@ -125,6 +125,15 @@ Kotlin + **Views** (not Compose); single `:app` module; **minSdk 26 / target 35*
 
 ## CI / release
 
+**Cut a release with `scripts/release.sh <X.Y.Z> "<summary>"`** (shared with the
+Bifrost repo). It runs the CI gate first (`./gradlew testDebugUnitTest`, aborts on
+failure with a clean tree), bumps `app/build.gradle.kts` (`versionName` + auto
+`versionCode` +1) in lockstep with the tag, commits `Release X.Y.Z — <summary>`
+(Co-Authored-By trailer), annotated-tags `vX.Y.Z`, and pushes the branch + tag —
+which is what triggers the release workflow below. Emergency gate bypass:
+`SKIP_GATE=1 scripts/release.sh …`. Run it instead of bumping/committing/tagging by
+hand, so `versionCode` always increments and the tag never outruns the in-file version.
+
 `.github/workflows/ci.yml` — tests + lint + `assembleDebug` on push/PR, uploads
 the debug APK + reports. `.github/workflows/release.yml` — on a `v*` tag, builds
 `assembleRelease`, signs it (release keystore from `SIGNING_KEYSTORE_BASE64` &

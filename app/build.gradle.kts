@@ -11,8 +11,8 @@ android {
         applicationId = "live.theundead.bifrost.kiosk"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -35,6 +35,9 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        // Expose VERSION_NAME so the WebView can stamp it into its User-Agent
+        // (the marker the Bifrost web app keys on to hide kiosk-inappropriate UI).
+        buildConfig = true
     }
     // The Vosk model (if bundled) ships uncompressed so it can be mmap'd at runtime.
     androidResources {
