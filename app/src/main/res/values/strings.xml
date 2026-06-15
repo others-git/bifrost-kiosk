@@ -15,4 +15,9 @@
     <string name="exit_lock">Exit lock-task (maintenance)</string>
     <string name="enter_pin">Enter maintenance PIN</string>
     <string name="wrong_pin">Wrong PIN</string>
+
+    <string name="error_title">Can\'t reach Bifrost</string>
+    <string name="error_message">The hub may be starting up.</string>
+    <string name="error_reload">Reload</string>
+    <string name="error_retrying">Retrying…</string>
 </resources>

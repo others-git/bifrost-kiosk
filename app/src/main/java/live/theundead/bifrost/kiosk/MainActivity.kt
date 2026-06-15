@@ -4,9 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.WindowManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
@@ -30,6 +35,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: Prefs
 
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** Set when a main-frame load fails; cleared on a successful main-frame load. */
+    private var loadError = false
+
+    /** Current auto-retry backoff (ms): starts at MIN, doubles up to MAX. */
+    private var retryDelayMs = RETRY_MIN_MS
+    private val retryRunnable = Runnable { attemptReload() }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +56,11 @@ class MainActivity : AppCompatActivity() {
 
         LockTask.configurePolicies(this)
         configureWebView()
+        binding.reloadButton.setOnClickListener {
+            // Human-driven recovery: reset backoff and reload immediately.
+            retryDelayMs = RETRY_MIN_MS
+            attemptReload()
+        }
         binding.webview.loadUrl(prefs.dashboardUrl)
         // Share the WebView with the voice pipeline so it can drive the on-screen
         // voice overlay (window.bifrostVoice). Same process as VoiceService.
@@ -81,10 +100,70 @@ class MainActivity : AppCompatActivity() {
                 // Keep all navigation inside the kiosk WebView.
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
-                    request: android.webkit.WebResourceRequest,
+                    request: WebResourceRequest,
                 ): Boolean = false
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    error: WebResourceError,
+                ) {
+                    // Only main-frame failures brick the kiosk; ignore subresources.
+                    if (request.isForMainFrame) onMainFrameError(view)
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    errorResponse: WebResourceResponse,
+                ) {
+                    // Treat 5xx on the main frame as "server still booting".
+                    if (request.isForMainFrame && errorResponse.statusCode >= 500) {
+                        onMainFrameError(view)
+                    }
+                }
+
+                override fun onPageCommitVisible(view: WebView, url: String) {
+                    // Real content painted with no pending error → recovered.
+                    if (!loadError) onMainFrameSuccess()
+                }
             }
         }
+    }
+
+    /** A main-frame load failed: cover Chrome's error page and start auto-retry. */
+    private fun onMainFrameError(view: WebView) {
+        loadError = true
+        // Clear the generic Chrome error page underneath, then show our overlay.
+        view.loadUrl("about:blank")
+        binding.errorUrl.text = prefs.dashboardUrl
+        binding.errorOverlay.visibility = View.VISIBLE
+        scheduleRetry()
+    }
+
+    /** A main-frame load succeeded: hide the overlay and stop retrying. */
+    private fun onMainFrameSuccess() {
+        loadError = false
+        retryDelayMs = RETRY_MIN_MS
+        handler.removeCallbacks(retryRunnable)
+        binding.errorOverlay.visibility = View.GONE
+    }
+
+    private fun scheduleRetry() {
+        handler.removeCallbacks(retryRunnable)
+        handler.postDelayed(retryRunnable, retryDelayMs)
+    }
+
+    /** Reload the dashboard; if it fails again, onReceivedError re-arms the loop. */
+    private fun attemptReload() {
+        handler.removeCallbacks(retryRunnable)
+        // Optimistically clear the error so a success can hide the overlay; if the
+        // load fails, onReceivedError sets it again and re-schedules.
+        loadError = false
+        binding.webview.loadUrl(prefs.dashboardUrl)
+        // Gentle backoff for the *next* auto-retry, capped.
+        retryDelayMs = (retryDelayMs * 2).coerceAtMost(RETRY_MAX_MS)
+        if (binding.errorOverlay.visibility == View.VISIBLE) scheduleRetry()
     }
 
     private fun maybeStartVoice() {
@@ -126,8 +205,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(retryRunnable)
         VoiceFeedback.detach()
         binding.webview.destroy()
         super.onDestroy()
+    }
+
+    companion object {
+        /** Auto-retry cadence: first retry ~5s, doubling up to ~20s, hands-free. */
+        private const val RETRY_MIN_MS = 5_000L
+        private const val RETRY_MAX_MS = 20_000L
     }
 }

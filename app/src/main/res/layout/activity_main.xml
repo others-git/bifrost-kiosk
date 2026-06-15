@@ -9,6 +9,71 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Branded "can't reach Bifrost" overlay. Sits above the WebView and covers
+         Chrome's generic error page when a main-frame load fails; auto-retries in
+         the background and offers a big touch-friendly Reload for a human. -->
+    <LinearLayout
+        android:id="@+id/errorOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#0B0F14"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/errorTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/error_title"
+            android:textColor="#38BDF8"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:text="@string/error_message"
+            android:textColor="#C7D2DB"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/errorUrl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:textColor="#5A6B78"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/reloadButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="36dp"
+            android:minHeight="64dp"
+            android:minWidth="240dp"
+            android:paddingHorizontal="40dp"
+            android:backgroundTint="#38BDF8"
+            android:text="@string/error_reload"
+            android:textColor="#06121A"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/errorRetrying"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/error_retrying"
+            android:textColor="#5A6B78"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
     <!-- Invisible maintenance handle: long-press the top-right corner to reach
          the PIN-gated setup screen without an escape from the kiosk. -->
     <View
