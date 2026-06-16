@@ -1,12 +1,17 @@
 package live.theundead.bifrost.kiosk
 
 import android.annotation.SuppressLint
+import android.app.admin.DevicePolicyManager
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.view.View
+import android.webkit.CookieManager
+import java.util.concurrent.Executors
 import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -36,6 +41,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: Prefs
 
     private val handler = Handler(Looper.getMainLooper())
+
+    /** Heartbeat (kiosk check-in) runs off the main thread; commands dispatch back on it. */
+    private val checkinExecutor = Executors.newSingleThreadExecutor()
+    private val heartbeatRunnable = Runnable { doHeartbeat() }
 
     /** Set when a main-frame load fails; cleared on a successful main-frame load. */
     private var loadError = false
@@ -83,6 +92,61 @@ class MainActivity : AppCompatActivity() {
         })
 
         maybeStartVoice()
+        startHeartbeat()
+    }
+
+    // ---- kiosk check-in (heartbeat + controller commands) -------------------
+
+    /** Begin (or restart) the periodic check-in that registers this tablet with the hub. */
+    private fun startHeartbeat() {
+        handler.removeCallbacks(heartbeatRunnable)
+        handler.post(heartbeatRunnable)
+    }
+
+    private fun doHeartbeat() {
+        val screenOn = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+        val server = prefs.serverBase
+        val key = prefs.apiKey
+        checkinExecutor.execute {
+            val cmd = KioskCheckin(server, key).checkin(BuildConfig.VERSION_NAME, screenOn)
+            if (cmd != null) handler.post { handleCommand(cmd) }
+        }
+        handler.postDelayed(heartbeatRunnable, CHECKIN_MS)
+    }
+
+    /** Act on a queued controller command. */
+    private fun handleCommand(cmd: String) {
+        when (cmd) {
+            "lock" -> signOut()
+            "sleep" -> sleepScreen()
+            "wake" -> wakeScreen()
+            else -> android.util.Log.w("MainActivity", "unknown kiosk command: $cmd")
+        }
+    }
+
+    /** Force sign-out: drop the dashboard session and reload (lands on login). */
+    private fun signOut() {
+        CookieManager.getInstance().removeAllCookies(null)
+        binding.webview.clearHistory()
+        retryDelayMs = RETRY_MIN_MS
+        binding.webview.loadUrl(prefs.dashboardUrl)
+    }
+
+    /** Sleep the display. Device-owner can lock now; the kiosk has no keyguard so it just sleeps. */
+    private fun sleepScreen() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        runCatching { dpm.lockNow() }
+    }
+
+    /** Best-effort wake: a brief wake lock that turns the screen back on. */
+    private fun wakeScreen() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        @Suppress("DEPRECATION")
+        val wl = pm.newWakeLock(
+            PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+            "bifrost:wake",
+        )
+        runCatching { wl.acquire(3_000L) }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -210,6 +274,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(retryRunnable)
+        handler.removeCallbacks(heartbeatRunnable)
+        checkinExecutor.shutdownNow()
         VoiceFeedback.detach()
         binding.webview.destroy()
         super.onDestroy()
@@ -219,5 +285,8 @@ class MainActivity : AppCompatActivity() {
         /** Auto-retry cadence: first retry ~5s, doubling up to ~20s, hands-free. */
         private const val RETRY_MIN_MS = 5_000L
         private const val RETRY_MAX_MS = 20_000L
+
+        /** Heartbeat cadence — well inside the hub's online window. */
+        private const val CHECKIN_MS = 30_000L
     }
 }
