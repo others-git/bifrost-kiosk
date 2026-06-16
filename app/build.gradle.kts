@@ -6,6 +6,10 @@ plugins {
 android {
     namespace = "live.theundead.bifrost.kiosk"
     compileSdk = 35
+    // whisper.cpp command-transcription engine (native). The upstream source is
+    // fetched by scripts/fetch-whisper.sh; the build is wired via the CMakeLists
+    // below. arm64-v8a only — the wall tablet's ABI.
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "live.theundead.bifrost.kiosk"
@@ -14,6 +18,16 @@ android {
         versionCode = 6
         versionName = "0.1.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

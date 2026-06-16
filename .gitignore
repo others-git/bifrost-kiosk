@@ -2,6 +2,7 @@
 .gradle/
 build/
 */build/
+.cxx/
 local.properties
 
 # Vosk model is fetched, never committed (tens of MB) — see scripts/fetch-vosk-model.sh
@@ -20,3 +21,6 @@ keystore.properties
 
 # OS
 .DS_Store
+
+# Vendored whisper.cpp upstream source (fetched via scripts/fetch-whisper.sh)
+/app/src/main/cpp/whisper.cpp/
