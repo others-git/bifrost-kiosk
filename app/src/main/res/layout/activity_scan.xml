@@ -1,15 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res-android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<!-- The DecoratedBarcodeView is added programmatically in ScanActivity (index 0,
+     behind these overlays) — inflating it from XML crashed on this build. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/scanRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
-
-    <com.journeyapps.barcodescanner.DecoratedBarcodeView
-        android:id="@+id/barcode"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:zxing_use_texture_view="true" />
 
     <!-- Big, unmissable result banner: turns green the instant a code decodes. -->
     <TextView
