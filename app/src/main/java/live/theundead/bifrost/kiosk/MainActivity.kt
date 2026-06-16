@@ -46,6 +46,13 @@ class MainActivity : AppCompatActivity() {
     private val checkinExecutor = Executors.newSingleThreadExecutor()
     private val heartbeatRunnable = Runnable { doHeartbeat() }
 
+    /** Live server→kiosk command stream (instant commands; heartbeat is the fallback). */
+    private var commandStream: KioskCommandStream? = null
+
+    /** De-dup: a command arrives via the stream AND lingers as the heartbeat fallback. */
+    private var lastCommand: String? = null
+    private var lastCommandAt = 0L
+
     /** Set when a main-frame load fails; cleared on a successful main-frame load. */
     private var loadError = false
 
@@ -93,6 +100,7 @@ class MainActivity : AppCompatActivity() {
 
         maybeStartVoice()
         startHeartbeat()
+        startCommandStream()
     }
 
     // ---- kiosk check-in (heartbeat + controller commands) -------------------
@@ -103,19 +111,37 @@ class MainActivity : AppCompatActivity() {
         handler.post(heartbeatRunnable)
     }
 
+    /** Open the live command stream so controller commands arrive instantly. */
+    private fun startCommandStream() {
+        commandStream?.stop()
+        commandStream = KioskCommandStream(prefs.serverBase, prefs.apiKey) { cmd ->
+            handler.post { handleCommand(cmd) }
+        }.also { it.start() }
+    }
+
     private fun doHeartbeat() {
         val screenOn = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val server = prefs.serverBase
         val key = prefs.apiKey
         checkinExecutor.execute {
-            val cmd = KioskCheckin(server, key).checkin(BuildConfig.VERSION_NAME, screenOn)
-            if (cmd != null) handler.post { handleCommand(cmd) }
+            val res = KioskCheckin(server, key).checkin(BuildConfig.VERSION_NAME, screenOn) ?: return@execute
+            handler.post {
+                // Adopt the hub-assigned room as the voice context (location).
+                res.room?.let { if (it != prefs.roomContext) prefs.roomContext = it }
+                res.command?.let { handleCommand(it) }
+            }
         }
         handler.postDelayed(heartbeatRunnable, CHECKIN_MS)
     }
 
-    /** Act on a queued controller command. */
+    /** Act on a controller command (from the live stream or the heartbeat fallback). */
     private fun handleCommand(cmd: String) {
+        // The same command can arrive twice — pushed live, then again as the
+        // heartbeat's pending fallback. Ignore an identical repeat within the window.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (cmd == lastCommand && now - lastCommandAt < COMMAND_DEDUP_MS) return
+        lastCommand = cmd
+        lastCommandAt = now
         when (cmd) {
             "lock" -> signOut()
             "sleep" -> sleepScreen()
@@ -275,8 +301,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         handler.removeCallbacks(retryRunnable)
         handler.removeCallbacks(heartbeatRunnable)
+        commandStream?.stop()
         checkinExecutor.shutdownNow()
-        VoiceFeedback.detach()
+        VoiceFeedback.detach(binding.webview)
         binding.webview.destroy()
         super.onDestroy()
     }
@@ -286,7 +313,10 @@ class MainActivity : AppCompatActivity() {
         private const val RETRY_MIN_MS = 5_000L
         private const val RETRY_MAX_MS = 20_000L
 
-        /** Heartbeat cadence — well inside the hub's online window. */
-        private const val CHECKIN_MS = 30_000L
+        /** Heartbeat cadence — now a slow liveness ping; commands push over the stream. */
+        private const val CHECKIN_MS = 60_000L
+
+        /** Ignore an identical command repeated within this window (stream + heartbeat overlap). */
+        private const val COMMAND_DEDUP_MS = 90_000L
     }
 }

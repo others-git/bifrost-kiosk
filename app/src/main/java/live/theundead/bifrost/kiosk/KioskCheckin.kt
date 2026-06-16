@@ -19,8 +19,11 @@ class KioskCheckin(
     private val serverBase: String,
     private val apiKey: String,
 ) {
-    /** Heartbeat; returns the queued command ("sleep"|"wake"|"lock") or null. */
-    fun checkin(appVersion: String, screenOn: Boolean): String? {
+    /** Result of a check-in: a queued command and/or the hub-assigned room. */
+    data class Result(val command: String?, val room: String?)
+
+    /** Heartbeat; returns the queued command + assigned room, or null on failure. */
+    fun checkin(appVersion: String, screenOn: Boolean): Result? {
         if (serverBase.isBlank() || apiKey.isBlank()) return null
         val url = URL(serverBase.trimEnd('/') + "/api/kiosks/checkin")
         val body = JSONObject().apply {
@@ -45,7 +48,11 @@ class KioskCheckin(
                 return null
             }
             val resp = conn.inputStream.bufferedReader().use(BufferedReader::readText)
-            JSONObject(resp).optString("command", "").ifBlank { null }
+            val json = JSONObject(resp)
+            Result(
+                command = json.optString("command", "").ifBlank { null },
+                room = json.optString("room", "").ifBlank { null },
+            )
         } catch (e: Exception) {
             Log.e(TAG, "checkin failed", e)
             null

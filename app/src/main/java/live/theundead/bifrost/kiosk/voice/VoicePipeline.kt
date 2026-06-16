@@ -197,7 +197,9 @@ class VoicePipeline(
     companion object {
         private const val TAG = "VoicePipeline"
 
-        /** Silence window after wake/last speech before we give up and re-arm wake. */
-        private const val WINDOW_MS = 7_000L
+        /** Silence window: close the pill / re-arm wake this long after the wake
+         * word or the last speech. Re-armed on every fresh partial, so it only
+         * fires on true silence — not mid-command pauses while you're talking. */
+        private const val WINDOW_MS = 3_500L
     }
 }
