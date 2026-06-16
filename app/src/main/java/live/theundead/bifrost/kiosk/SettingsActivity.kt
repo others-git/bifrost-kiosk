@@ -1,6 +1,7 @@
 package live.theundead.bifrost.kiosk
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,8 +12,6 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
 import live.theundead.bifrost.kiosk.databinding.ActivitySettingsBinding
 import live.theundead.bifrost.kiosk.voice.VoiceService
 import org.json.JSONObject
@@ -34,15 +33,13 @@ class SettingsActivity : AppCompatActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** Launches the ZXing (FOSS, no Play-services) QR scanner and returns its text. */
-    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
-        val contents = result.contents
-        if (contents.isNullOrBlank()) {
-            // User cancelled (back/volume) — say nothing noisy.
-            return@registerForActivityResult
+    /** Launches our feedback-rich [ScanActivity] and redeems the QR it returns. */
+    private val scanLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode != RESULT_OK) return@registerForActivityResult // cancelled
+            val contents = result.data?.getStringExtra(ScanActivity.EXTRA_RESULT)
+            if (!contents.isNullOrBlank()) handleScannedPayload(contents)
         }
-        handleScannedPayload(contents)
-    }
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -114,13 +111,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun launchScanner() {
-        val options = ScanOptions().apply {
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt(getString(R.string.scan_prompt))
-            setBeepEnabled(false)
-            setOrientationLocked(false)
-        }
-        scanLauncher.launch(options)
+        scanLauncher.launch(Intent(this, ScanActivity::class.java))
     }
 
     /**

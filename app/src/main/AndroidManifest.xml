@@ -49,6 +49,13 @@
             android:label="@string/settings_title"
             android:theme="@style/Theme.BifrostKiosk" />
 
+        <!-- Pairing-QR scanner (feedback-rich; reached from the maintenance screen). -->
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:screenOrientation="fullSensor"
+            android:theme="@style/Theme.BifrostKiosk" />
+
         <!-- Always-on voice satellite. Runs alongside the locked WebView. -->
         <service
             android:name=".voice.VoiceService"
