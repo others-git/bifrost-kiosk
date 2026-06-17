@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only additions, merged into the main manifest for debug builds only. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Replay harness (see ReplayReceiver): adb-triggered WAV replay. Exported
+             so adb (uid shell) can deliver the broadcast; safe — debug-only. -->
+        <receiver
+            android:name=".voice.ReplayReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="live.theundead.bifrost.kiosk.REPLAY" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

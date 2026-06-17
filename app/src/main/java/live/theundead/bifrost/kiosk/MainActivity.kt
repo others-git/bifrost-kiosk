@@ -2,8 +2,12 @@ package live.theundead.bifrost.kiosk
 
 import android.annotation.SuppressLint
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
+import androidx.core.content.ContextCompat
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -53,6 +57,23 @@ class MainActivity : AppCompatActivity() {
     private var lastCommand: String? = null
     private var lastCommandAt = 0L
 
+    /** Logs the outcome of a self-update install (on success the process is replaced,
+     * so this mostly surfaces failures / a missing device-owner privilege). */
+    private val installResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Int.MIN_VALUE)
+            val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+            when (status) {
+                PackageInstaller.STATUS_SUCCESS ->
+                    android.util.Log.i("MainActivity", "update install succeeded")
+                PackageInstaller.STATUS_PENDING_USER_ACTION ->
+                    android.util.Log.w("MainActivity", "update install needs user action — not device owner?")
+                else ->
+                    android.util.Log.e("MainActivity", "update install failed: status=$status msg=$msg")
+            }
+        }
+    }
+
     /** Set when a main-frame load fails; cleared on a successful main-frame load. */
     private var loadError = false
 
@@ -101,6 +122,12 @@ class MainActivity : AppCompatActivity() {
         maybeStartVoice()
         startHeartbeat()
         startCommandStream()
+        ContextCompat.registerReceiver(
+            this,
+            installResultReceiver,
+            IntentFilter(KioskUpdater.ACTION_INSTALL_RESULT),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     // ---- kiosk check-in (heartbeat + controller commands) -------------------
@@ -146,7 +173,18 @@ class MainActivity : AppCompatActivity() {
             "lock" -> signOut()
             "sleep" -> sleepScreen()
             "wake" -> wakeScreen()
+            "update" -> startUpdate()
             else -> android.util.Log.w("MainActivity", "unknown kiosk command: $cmd")
+        }
+    }
+
+    /** Pull + install the latest APK the hub has cached (device-owner silent install). */
+    private fun startUpdate() {
+        val server = prefs.serverBase
+        val key = prefs.apiKey
+        checkinExecutor.execute {
+            val result = KioskUpdater(applicationContext, server, key).update()
+            android.util.Log.i("MainActivity", "update: $result")
         }
     }
 
@@ -302,6 +340,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(retryRunnable)
         handler.removeCallbacks(heartbeatRunnable)
         commandStream?.stop()
+        runCatching { unregisterReceiver(installResultReceiver) }
         checkinExecutor.shutdownNow()
         VoiceFeedback.detach(binding.webview)
         binding.webview.destroy()

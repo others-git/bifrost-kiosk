@@ -31,7 +31,10 @@ import java.util.concurrent.TimeUnit
 class VoicePipeline(
     context: Context,
     private val prefs: Prefs,
-    private val engine: SpeechEngine = VoskSpeechEngine(context, prefs),
+    // HybridSpeechEngine: Vosk does always-on wake spotting on-device AND captures
+    // the command audio (it implements CommandTranscriber) so we can hand the clip
+    // to server-side STT for accuracy, falling back to the Vosk transcript.
+    private val engine: SpeechEngine = HybridSpeechEngine(context, prefs),
     private val tts: TtsPlayer = TtsPlayer(context),
     private val scheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(1),
 ) : SpeechEngine.Listener {
@@ -40,6 +43,9 @@ class VoicePipeline(
 
     private val worker = Executors.newSingleThreadExecutor()
     private val lock = Any()
+
+    /** Set when the engine can hand back captured command audio for server STT. */
+    private val transcriber: CommandTranscriber? get() = engine as? CommandTranscriber
 
     /** True while a command is in flight (POST + TTS) — ignore all input until done. */
     @Volatile private var busy = false
@@ -84,7 +90,11 @@ class VoicePipeline(
                     // Woke from a final. If a command rode along, dispatch it now;
                     // otherwise open the window and wait for the following speech.
                     if (match.command.isNotBlank()) {
-                        dispatch(match.command)
+                        // Wake + command landed in one final with no preceding
+                        // partial, so we never marked a wake point — the captured
+                        // audio would be clipped. Use the text path with this
+                        // (already-recognized) command instead.
+                        dispatch(match.command, useAudio = false)
                     } else {
                         Log.i(TAG, "wake word heard, awaiting command")
                         if (phase != Phase.CAPTURING) enterCapturing()
@@ -96,7 +106,9 @@ class VoicePipeline(
                     // final is the whole "bifrost turn off the lights").
                     val command = WakeWord.stripWake(text, prefs.wakeWord)
                     if (command.isNotBlank()) {
-                        dispatch(command)
+                        // Captured through a real wake point → prefer server STT
+                        // on the audio, with this Vosk transcript as the fallback.
+                        dispatch(command, useAudio = true)
                     } else {
                         // Empty final (just the bare wake again) — keep the window open.
                         resetWindow()
@@ -109,6 +121,9 @@ class VoicePipeline(
     /** Caller must hold [lock]. */
     private fun enterCapturing() {
         phase = Phase.CAPTURING
+        // Mark "the command starts here" the instant we wake, so the engine's
+        // rolling buffer keeps the command audio for server-side STT.
+        transcriber?.noteWake()
         VoiceFeedback.setState(VoiceFeedback.State.LISTENING)
         resetWindow()
     }
@@ -135,19 +150,29 @@ class VoicePipeline(
         phase = Phase.WAKE
     }
 
-    /** Hand a captured command to the hub. Caller must hold [lock]. */
-    private fun dispatch(command: String) {
+    /**
+     * Hand a captured command to the hub. Caller must hold [lock].
+     * [useAudio] = capture came through a real wake point, so the buffered audio
+     * is usable for server-side STT (the more accurate path).
+     */
+    private fun dispatch(command: String, useAudio: Boolean) {
         busy = true
         resetToWake()
-        engine.pause()
+        engine.pause() // freeze the capture buffer + stop hearing our own TTS
         VoiceFeedback.setState(VoiceFeedback.State.THINKING)
-        Log.i(TAG, "command: '$command'")
-        worker.execute { handle(command) }
+        Log.i(TAG, "command: '$command' (audio=$useAudio)")
+        worker.execute { handle(command, useAudio) }
     }
 
-    private fun handle(command: String) {
+    private fun handle(command: String, useAudio: Boolean) {
         val client = BifrostVoiceClient(prefs.serverBase, prefs.voiceEndpoint, prefs.apiKey)
-        val reply = client.command(command, prefs.roomContext.ifBlank { null })
+        val room = prefs.roomContext.ifBlank { null }
+        // Prefer server-side STT on the captured audio (Speaches/whisper is more
+        // accurate than the on-device wake model). Fall back to the Vosk transcript
+        // via /command when there's no audio, no transcription model is configured
+        // (listen → null on 503), or the upload fails — so voice keeps working.
+        val wav = if (useAudio) transcriber?.commandAudioWav() else null
+        val reply = (wav?.let { client.listen(it, room) }) ?: client.command(command, room)
         // Error when the hub is unreachable (null), or it returned an HTTP error /
         // "didn't understand" with nothing to say (BifrostVoiceClient maps non-2xx
         // to Reply(false, "")).

@@ -32,8 +32,11 @@ class VocabularyClient(
         return try {
             conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 5_000
-                readTimeout = 10_000
+                // Short: this fetch gates the wake recognizer's start, so a slow/
+                // unreachable server must not stall always-on wake spotting. On
+                // timeout the engine just opens an un-biased recognizer.
+                connectTimeout = 2_000
+                readTimeout = 5_000
                 setRequestProperty("Accept", "application/json")
                 if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
             }

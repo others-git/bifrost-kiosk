@@ -3,18 +3,23 @@ package live.theundead.bifrost.kiosk.voice
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Client for Bifrost's text→action voice seam.
+ * Client for Bifrost's voice seams.
  *
- * Posts to the **shipped** `POST /api/voice/command { text, context? }`
- * (Bifrost M23 P1), which returns `{ ok, said, clauses[] }`. We send transcribed
- * text (STT happens on-device via Vosk). Bifrost M23 P2 also shipped a
- * server-side `POST /api/voice/listen` multipart-audio endpoint; we stay on
- * on-device STT for now (half-duplex, no upload), but that seam is the path to
- * server-side STT later. `said` is read back via TTS.
+ * Two paths, both authenticated with the same `bfr_` Bearer key:
+ *  - [command]: `POST /api/voice/command { text, context? }` (M23 P1) — the
+ *    text→action seam, fed the **on-device Vosk** transcript. The reliable
+ *    fallback that works with no server STT.
+ *  - [listen]: `POST /api/voice/listen` (M23 P2) — multipart audio upload that
+ *    runs server-side STT (Speaches/whisper) then the *same* command seam. More
+ *    accurate than the on-device wake model, so it's preferred when available;
+ *    it degrades to [command] when the server has no transcription model (503)
+ *    or is unreachable. Both return `{ ok, said, clauses[] }`; `said` is read
+ *    back via TTS.
  *
  * Auth: a `bfr_` Bearer key, matching `/api/v1` + `/mcp`. The voice seam now
  * accepts **either** a browser session **or** a `bfr_` Bearer key server-side
@@ -73,7 +78,80 @@ class BifrostVoiceClient(
         }
     }
 
+    /**
+     * Server-side STT: POST the captured command [wav] (16 kHz mono WAV) to
+     * `/api/voice/listen` as multipart, with optional [room] context. Returns
+     * **null to signal "fall back to [command]"** — that covers a 503 (no
+     * transcription model configured server-side), a 5xx (STT upstream failed),
+     * and any transport failure, so the caller can retry with the Vosk
+     * transcript. A 401/403 surfaces as an auth error (needs re-pairing) without
+     * falling back, since the text path would fail the same way.
+     *
+     * Blocking — invoke off the main thread.
+     */
+    fun listen(wav: ByteArray, room: String?): Reply? {
+        val url = URL(serverBase.trimEnd('/') + LISTEN_PATH)
+        val boundary = "----bifrost${System.nanoTime()}"
+
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 20_000 // server STT can take a beat (CPU whisper)
+                doOutput = true
+                setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                setRequestProperty("Accept", "application/json")
+                if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+            conn.outputStream.use { writeMultipart(it, boundary, wav, room) }
+
+            val code = conn.responseCode
+            when {
+                code in 200..299 -> {
+                    val resp = conn.inputStream.bufferedReader().use(BufferedReader::readText)
+                    val json = JSONObject(resp)
+                    Reply(ok = json.optBoolean("ok", false), said = json.optString("said", ""))
+                }
+                code == 401 || code == 403 -> Reply(false, "", authError = true)
+                else -> {
+                    // 503 = no transcription model; 502 = STT upstream failed; etc.
+                    Log.w(TAG, "voice listen HTTP $code — falling back to text command")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "voice listen failed — falling back to text command", e)
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /** Hand-rolled multipart body: the `file` audio part + an optional `room` field. */
+    private fun writeMultipart(out: OutputStream, boundary: String, wav: ByteArray, room: String?) {
+        val header = buildString {
+            append("--").append(boundary).append("\r\n")
+            append("Content-Disposition: form-data; name=\"file\"; filename=\"command.wav\"\r\n")
+            append("Content-Type: audio/wav\r\n\r\n")
+        }
+        out.write(header.toByteArray())
+        out.write(wav)
+        val tail = buildString {
+            append("\r\n")
+            if (!room.isNullOrBlank()) {
+                append("--").append(boundary).append("\r\n")
+                append("Content-Disposition: form-data; name=\"room\"\r\n\r\n")
+                append(room).append("\r\n")
+            }
+            append("--").append(boundary).append("--\r\n")
+        }
+        out.write(tail.toByteArray())
+        out.flush()
+    }
+
     companion object {
         private const val TAG = "BifrostVoiceClient"
+        private const val LISTEN_PATH = "/api/voice/listen"
     }
 }

@@ -28,20 +28,20 @@ interface SpeechEngine {
 }
 
 /**
- * Optional capability for engines that can transcribe the **command** utterance
- * with a higher-accuracy model than the always-on wake recognizer (the hybrid:
- * light Vosk for wake spotting, whisper for the command). The pipeline uses this
- * when present and falls back to the wake recognizer's transcript otherwise, so
- * a missing whisper model degrades gracefully.
+ * Optional capability for engines that own the mic and can hand back the raw
+ * **command** audio (the utterance after the wake word). The pipeline sends that
+ * to the server for high-accuracy transcription (`/api/voice/listen` → Speaches/
+ * whisper) and falls back to the wake recognizer's own transcript (`/command`)
+ * when the server has no transcription model or is unreachable — so voice keeps
+ * working regardless. The light Vosk model always does wake spotting on-device.
  */
 interface CommandTranscriber {
     /** Mark "the command starts about here" — called the instant the wake word fires. */
     fun noteWake()
 
     /**
-     * Transcribe the buffered audio captured since [noteWake] with the
-     * high-accuracy model. Returns null if unavailable (no model / not ready), so
-     * the caller falls back to the wake recognizer's transcript.
+     * The audio captured since [noteWake] as a 16 kHz mono 16-bit WAV, ready to
+     * POST to the server STT. Null if too short / nothing buffered.
      */
-    fun transcribeCommand(): String?
+    fun commandAudioWav(): ByteArray?
 }

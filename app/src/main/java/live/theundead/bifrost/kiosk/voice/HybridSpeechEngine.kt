@@ -1,12 +1,7 @@
 package live.theundead.bifrost.kiosk.voice
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.util.Log
-import com.whispercpp.whisper.WhisperContext
 import live.theundead.bifrost.kiosk.Prefs
 import org.json.JSONObject
 import org.vosk.Model
@@ -19,26 +14,27 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
- * Hybrid on-device speech engine: a **light Vosk model for always-on wake
- * spotting** and a **heavier whisper.cpp model for one-shot command
- * transcription**. This solves the tension that broke the single-model approach
- * — a big model (e.g. Vosk lgraph) is far more accurate but too heavy to run
- * continuously (it pegged the tablet's CPU and starved the wake loop), while the
- * small model keeps up with real-time but mishears commands.
+ * Mic-owning speech engine: a **light Vosk model for always-on wake spotting**,
+ * plus capture of the **command audio** for server-side transcription.
  *
- * We own the [AudioRecord] directly (rather than Vosk's `SpeechService`) so the
- * raw PCM is in hand: every frame is fed to the Vosk [Recognizer] for wake/end
- * detection **and** appended to a rolling ring buffer. When the pipeline fires
- * the wake word it calls [noteWake]; when the command utterance ends it calls
- * [transcribeCommand], which decodes the buffered audio once with whisper.
- *
- * Whisper is optional: with no model resolved, [transcribeCommand] returns null
- * and the pipeline falls back to the Vosk transcript — so the app still works,
- * just at small-model accuracy.
+ * We own the [AudioSource] (mic) directly rather than Vosk's `SpeechService`, so
+ * the raw PCM is in hand: every frame is fed to the Vosk [Recognizer] for
+ * wake/end detection **and** appended to a rolling ring buffer. When the wake
+ * word fires the pipeline calls [noteWake]; when the command ends it calls
+ * [commandAudioWav] to grab the buffered utterance and POST it to the server
+ * (`/api/voice/listen` → whisper). On-device transcription of the command was
+ * dropped — too slow on the tablet; the server (Speaches) is fast + accurate, and
+ * the pipeline falls back to the Vosk transcript when the server STT is absent.
  */
 class HybridSpeechEngine(
     private val context: Context,
     private val prefs: Prefs = Prefs(context),
+    // Pluggable so the replay harness can drive the exact same pipeline from a
+    // WAV file instead of the live mic — debugging without talking to the tablet.
+    private val audioSource: AudioSource = MicAudioSource(),
+    // Harness knob: skip the (server-dependent) vocabulary fetch so the open
+    // recognizer starts immediately. Defaults to production behaviour.
+    private val useVocabulary: Boolean = true,
 ) : SpeechEngine, CommandTranscriber {
 
     private var listener: SpeechEngine.Listener? = null
@@ -47,7 +43,6 @@ class HybridSpeechEngine(
 
     private var voskModel: Model? = null
     @Volatile private var recognizer: Recognizer? = null
-    @Volatile private var whisper: WhisperContext? = null
     private var audioThread: Thread? = null
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -65,8 +60,6 @@ class HybridSpeechEngine(
         this.listener = listener
         if (running) return
         running = true
-        // Load both models off the audio path; the loop starts once Vosk is ready.
-        worker.execute { loadWhisper() }
         loadVoskThenRun()
     }
 
@@ -104,33 +97,17 @@ class HybridSpeechEngine(
             .onFailure { Log.e(TAG, "vosk model load failed", it) }
     }
 
-    /** Resolve + load the whisper command model (pushed → internal cache → bundled asset). */
-    private fun loadWhisper() {
-        val path = resolveWhisperModel() ?: run {
-            Log.w(TAG, "no whisper model — commands fall back to Vosk transcript")
-            return
-        }
-        runCatching {
-            whisper = WhisperContext.fromFile(path)
-            Log.i(TAG, "whisper command model loaded: $path")
-        }.onFailure { Log.e(TAG, "whisper load failed", it) }
-    }
-
-    /** First `.bin` pushed under `…/files/whisper` (mirrored to internal for a real-fs mmap), else cached. */
-    private fun resolveWhisperModel(): String? {
-        val internal = File(context.filesDir, WHISPER_FILE)
-        val ext = context.getExternalFilesDir(null)?.let { File(it, WHISPER_DIR) }
-        val pushed = ext?.takeIf { it.isDirectory }?.listFiles { f -> f.name.endsWith(".bin") }?.firstOrNull()
-        if (pushed != null && (!internal.exists() || pushed.lastModified() > internal.lastModified())) {
-            runCatching { pushed.copyTo(internal, overwrite = true) }
-                .onFailure { Log.e(TAG, "mirror whisper model failed", it) }
-        }
-        return internal.takeIf { it.exists() && it.length() > 0 }?.absolutePath
-    }
-
     // ---- recognizer + vocabulary -------------------------------------------
 
     private fun startVocabularyAndLoop() {
+        if (!useVocabulary) {
+            // Harness path: open recognizer now, no server round-trip, no refresh.
+            worker.execute {
+                buildRecognizer(null)
+                startAudioLoop()
+            }
+            return
+        }
         worker.execute {
             val words = VocabularyClient(prefs.serverBase, prefs.apiKey).fetch()
             buildRecognizer(words)
@@ -171,30 +148,37 @@ class HybridSpeechEngine(
 
     // ---- audio loop ---------------------------------------------------------
 
-    @SuppressLint("MissingPermission") // RECORD_AUDIO is auto-granted to the device-owner kiosk
     private fun startAudioLoop() {
         if (audioThread != null) return
-        val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
-        val bufBytes = maxOf(minBuf, SAMPLE_RATE / 5 * 2) // ~200ms, 16-bit mono
         audioThread = thread(name = "hybrid-audio", isDaemon = true) {
-            val record = runCatching {
-                AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, CHANNEL, ENCODING, bufBytes * 2)
-            }.getOrElse { Log.e(TAG, "AudioRecord init failed", it); return@thread }
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord not initialized"); record.release(); return@thread
+            if (!audioSource.open()) {
+                Log.e(TAG, "audio source unavailable: ${audioSource.label}")
+                return@thread
             }
-            val bytes = ByteArray(bufBytes)
-            val floats = FloatArray(bufBytes / 2)
-            record.startRecording()
-            Log.i(TAG, "hybrid listening @ ${SAMPLE_RATE}Hz")
+            val bytes = ByteArray(FRAME_BYTES)
+            val floats = FloatArray(FRAME_BYTES / 2)
+            Log.i(TAG, "hybrid listening @ ${SAMPLE_RATE}Hz (${audioSource.label})")
             while (running) {
-                val n = record.read(bytes, 0, bytes.size)
-                if (n <= 0 || paused) continue
+                val n = audioSource.read(bytes)
+                if (n < 0) {
+                    Log.i(TAG, "audio source ended"); break // file replay finished
+                }
+                if (n == 0 || paused) continue
                 val samples = pcm16ToFloat(bytes, n, floats)
                 appendToRing(floats, samples)
                 feedVosk(bytes, n)
             }
-            runCatching { record.stop(); record.release() }
+            finalizeVosk() // flush the trailing utterance (matters for file replay)
+            audioSource.close()
+        }
+    }
+
+    /** Emit the recognizer's final result — used when a finite source (file) ends. */
+    private fun finalizeVosk() {
+        val rec = recognizer ?: return
+        runCatching {
+            val text = JSONObject(rec.finalResult).optString("text", "")
+            if (text.isNotBlank()) listener?.onTranscript(text)
         }
     }
 
@@ -228,8 +212,7 @@ class HybridSpeechEngine(
         wakeIndex = maxOf(0L, writeIndex - PREROLL_SAMPLES)
     }
 
-    override fun transcribeCommand(): String? {
-        val w = whisper ?: return null
+    override fun commandAudioWav(): ByteArray? {
         val audio = synchronized(ringLock) {
             val to = writeIndex
             var from = wakeIndex
@@ -238,10 +221,24 @@ class HybridSpeechEngine(
             FloatArray(size) { ring[((from + it) % ring.size).toInt()] }
         }
         if (audio.size < SAMPLE_RATE / 4) return null // <250ms — nothing useful
-        return runCatching { w.transcribe(audio) }
-            .onFailure { Log.e(TAG, "whisper transcribe failed", it) }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
+        return floatPcmToWav(audio)
+    }
+
+    /** Wrap mono float samples (-1..1) as a 16 kHz 16-bit PCM WAV byte array. */
+    private fun floatPcmToWav(samples: FloatArray): ByteArray {
+        val dataLen = samples.size * 2
+        val out = java.io.ByteArrayOutputStream(44 + dataLen)
+        fun le32(v: Int) { out.write(v); out.write(v shr 8); out.write(v shr 16); out.write(v shr 24) }
+        fun le16(v: Int) { out.write(v); out.write(v shr 8) }
+        out.write("RIFF".toByteArray()); le32(36 + dataLen); out.write("WAVE".toByteArray())
+        out.write("fmt ".toByteArray()); le32(16); le16(1); le16(1)        // PCM, mono
+        le32(SAMPLE_RATE); le32(SAMPLE_RATE * 2); le16(2); le16(16)        // rate, byterate, align, bits
+        out.write("data".toByteArray()); le32(dataLen)
+        for (s in samples) {
+            val v = (s.coerceIn(-1f, 1f) * 32767f).toInt()
+            le16(v)
+        }
+        return out.toByteArray()
     }
 
     // ---- lifecycle ----------------------------------------------------------
@@ -257,7 +254,6 @@ class HybridSpeechEngine(
         audioThread = null
         runCatching { recognizer?.close() }; recognizer = null
         runCatching { voskModel?.close() }; voskModel = null
-        runCatching { whisper?.release() }; whisper = null
     }
 
     // ---- helpers ------------------------------------------------------------
@@ -275,16 +271,12 @@ class HybridSpeechEngine(
     companion object {
         private const val TAG = "HybridSpeechEngine"
         private const val SAMPLE_RATE = 16000
-        private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
-        private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val RING_SECONDS = 14
         private const val PREROLL_SAMPLES = SAMPLE_RATE / 2 // 0.5s lookback before wake
         private const val REFRESH_MINUTES = 5L
 
         private const val VOSK_ASSET_DIR = "model-en-us"
         private const val VOSK_DIR = "vosk-model"
-        private const val WHISPER_DIR = "whisper"       // pushed: …/files/whisper/*.bin
-        private const val WHISPER_FILE = "whisper.bin"  // internal mirror
 
         /** Decode little-endian PCM-16 [bytes] (length [n]) into [out]; returns sample count. */
         fun pcm16ToFloat(bytes: ByteArray, n: Int, out: FloatArray): Int {
