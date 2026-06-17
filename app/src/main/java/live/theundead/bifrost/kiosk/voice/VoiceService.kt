@@ -45,6 +45,7 @@ class VoiceService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACTION_PTT) pipeline?.beginPushToTalk()
         return START_STICKY
     }
 
@@ -87,6 +88,15 @@ class VoiceService : LifecycleService() {
     companion object {
         private const val TAG = "VoiceService"
         private const val NOTIF_ID = 42
+        private const val ACTION_PTT = "live.theundead.bifrost.kiosk.PTT"
+
+        /** Push-to-talk: tell the running voice service to start capturing a command
+         * now (skip the wake word). No-op if voice is off / mic-less. */
+        fun pushToTalk(context: Context) {
+            context.startService(
+                Intent(context, VoiceService::class.java).setAction(ACTION_PTT),
+            )
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, VoiceService::class.java)

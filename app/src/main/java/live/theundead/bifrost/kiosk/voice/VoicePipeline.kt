@@ -60,6 +60,22 @@ class VoicePipeline(
         engine.start(this)
     }
 
+    /** Push-to-talk: open the command window now, as if the wake word were heard,
+     * so the next utterance is captured without the wake phrase. Driven by the
+     * kiosk WebView's PTT button via the JS bridge. The always-on engine is
+     * already feeding audio, so this just flips WAKE → CAPTURING. */
+    fun beginPushToTalk() {
+        synchronized(lock) {
+            if (busy) return
+            if (phase == Phase.WAKE) {
+                Log.i(TAG, "push-to-talk: entering capture")
+                enterCapturing()
+            } else {
+                resetWindow() // already capturing — keep the window open
+            }
+        }
+    }
+
     override fun onPartial(text: String) {
         synchronized(lock) {
             if (busy) return

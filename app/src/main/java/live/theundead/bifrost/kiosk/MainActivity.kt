@@ -202,15 +202,34 @@ class MainActivity : AppCompatActivity() {
         runCatching { dpm.lockNow() }
     }
 
-    /** Best-effort wake: a brief wake lock that turns the screen back on. */
+    /** Turn the display on for a remote "wake". `setTurnScreenOn`/`setShowWhenLocked`
+     * are the modern replacement for the (no-op-on-Android-15) FULL_WAKE_LOCK; the
+     * brief ACQUIRE_CAUSES_WAKEUP lock is the actual nudge. We set the turn-on flags
+     * **only for this wake** and clear them shortly after, so a stray relaunch
+     * doesn't light the screen. */
     private fun wakeScreen() {
+        setScreenWakeFlags(true)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         @Suppress("DEPRECATION")
         val wl = pm.newWakeLock(
-            PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
             "bifrost:wake",
         )
         runCatching { wl.acquire(3_000L) }
+        // Scope the turn-on behaviour to this wake action.
+        handler.postDelayed({ setScreenWakeFlags(false) }, 3_000L)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setScreenWakeFlags(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+        } else {
+            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (on) window.addFlags(flags) else window.clearFlags(flags)
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -232,6 +251,9 @@ class MainActivity : AppCompatActivity() {
             settings.setSupportZoom(false)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
+            // Let the dashboard's push-to-talk button drive the *native* voice
+            // pipeline (the WebView's getUserMedia can't run over plain-HTTP LAN).
+            addJavascriptInterface(KioskPttBridge(this@MainActivity), "bifrostKioskPtt")
             webChromeClient = WebChromeClient()
             webViewClient = object : WebViewClient() {
                 // Keep all navigation inside the kiosk WebView.
@@ -374,5 +396,16 @@ class MainActivity : AppCompatActivity() {
 
         /** Ignore an identical command repeated within this window (stream + heartbeat overlap). */
         private const val COMMAND_DEDUP_MS = 90_000L
+    }
+}
+
+/** JS bridge exposed to the dashboard as `window.bifrostKioskPtt`. Its `start()`
+ * kicks the native voice pipeline into command capture (skip the wake word), so
+ * the web push-to-talk button works on the kiosk without the WebView mic. Methods
+ * run on a binder thread; `pushToTalk` just starts a service, which is thread-safe. */
+private class KioskPttBridge(private val context: Context) {
+    @android.webkit.JavascriptInterface
+    fun start() {
+        VoiceService.pushToTalk(context)
     }
 }
