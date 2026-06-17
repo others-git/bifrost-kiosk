@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity() {
             retryDelayMs = RETRY_MIN_MS
             attemptReload()
         }
-        binding.webview.loadUrl(prefs.dashboardUrl)
+        loadDashboard()
         // Share the WebView with the voice pipeline so it can drive the on-screen
         // voice overlay (window.bifrostVoice). Same process as VoiceService.
         VoiceFeedback.attach(binding.webview)
@@ -227,6 +227,11 @@ class MainActivity : AppCompatActivity() {
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
+            // A wall fixture shouldn't pinch-zoom (passers-by zoom it by accident
+            // and can't reset it). Disable zoom entirely.
+            settings.setSupportZoom(false)
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
             webChromeClient = WebChromeClient()
             webViewClient = object : WebViewClient() {
                 // Keep all navigation inside the kiosk WebView.
@@ -286,13 +291,25 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed(retryRunnable, retryDelayMs)
     }
 
+    /** Load the dashboard, first seeding the kiosk's `bfr_key` cookie so an
+     * authorized fixture trades it for a session and skips the password login
+     * (the web app reads this cookie via POST /api/auth/kiosk). */
+    private fun loadDashboard() {
+        val key = prefs.apiKey
+        if (key.isNotBlank() && prefs.dashboardUrl.isNotBlank()) {
+            CookieManager.getInstance().setCookie(prefs.dashboardUrl, "bfr_key=$key; Path=/")
+            CookieManager.getInstance().flush()
+        }
+        binding.webview.loadUrl(prefs.dashboardUrl)
+    }
+
     /** Reload the dashboard; if it fails again, onReceivedError re-arms the loop. */
     private fun attemptReload() {
         handler.removeCallbacks(retryRunnable)
         // Optimistically clear the error so a success can hide the overlay; if the
         // load fails, onReceivedError sets it again and re-schedules.
         loadError = false
-        binding.webview.loadUrl(prefs.dashboardUrl)
+        loadDashboard()
         // Gentle backoff for the *next* auto-retry, capped.
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(RETRY_MAX_MS)
         if (binding.errorOverlay.visibility == View.VISIBLE) scheduleRetry()

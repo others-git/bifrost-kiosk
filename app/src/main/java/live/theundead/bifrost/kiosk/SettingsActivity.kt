@@ -99,8 +99,13 @@ class SettingsActivity : AppCompatActivity() {
         if (prefs.voiceEnabled) VoiceService.start(this) else VoiceService.stop(this)
 
         Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
-        // Relaunch the kiosk so the new URL/policies take hold.
-        startActivity(packageManager.getLaunchIntentForPackage(packageName))
+        // Relaunch the kiosk so the new URL/policies take hold. CLEAR_TASK forces
+        // MainActivity to be *recreated* (its onCreate reloads the dashboard with
+        // the new URL) — without it, the launcher intent just brings the existing
+        // instance forward and the WebView keeps the old endpoint.
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
         finish()
     }
 
