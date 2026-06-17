@@ -56,23 +56,42 @@ class VoicePipeline(
     /** Pending window-expiry task; cancelled/rescheduled on each fresh partial. */
     private var windowTask: ScheduledFuture<*>? = null
 
+    /** True while the kiosk PTT button is physically held. While held we capture
+     * continuously: no silence-timeout, and Vosk finals don't auto-dispatch — the
+     * command is dispatched only on release ([endPushToTalk]). */
+    @Volatile private var pttHeld = false
+
     fun start() {
         engine.start(this)
     }
 
-    /** Push-to-talk: open the command window now, as if the wake word were heard,
-     * so the next utterance is captured without the wake phrase. Driven by the
-     * kiosk WebView's PTT button via the JS bridge. The always-on engine is
-     * already feeding audio, so this just flips WAKE → CAPTURING. */
+    /** Push-to-talk **press**: start capturing now (skip the wake word) and keep
+     * listening for as long as the button is held — no silence window. */
     fun beginPushToTalk() {
         synchronized(lock) {
             if (busy) return
-            if (phase == Phase.WAKE) {
-                Log.i(TAG, "push-to-talk: entering capture")
-                enterCapturing()
-            } else {
-                resetWindow() // already capturing — keep the window open
+            Log.i(TAG, "push-to-talk: held — capturing")
+            pttHeld = true
+            if (phase != Phase.CAPTURING) {
+                phase = Phase.CAPTURING
+                transcriber?.noteWake()
             }
+            VoiceFeedback.setState(VoiceFeedback.State.LISTENING)
+            // No silence timeout while held — the user controls the window.
+            windowTask?.cancel(false)
+            windowTask = null
+        }
+    }
+
+    /** Push-to-talk **release**: stop listening and dispatch the held clip via
+     * server STT (Vosk finals were suppressed while held). */
+    fun endPushToTalk() {
+        synchronized(lock) {
+            if (!pttHeld) return
+            pttHeld = false
+            if (busy || phase != Phase.CAPTURING) return
+            Log.i(TAG, "push-to-talk: released — dispatching")
+            dispatch("", useAudio = true)
         }
     }
 
@@ -89,8 +108,9 @@ class VoicePipeline(
                 }
                 Phase.CAPTURING -> {
                     // Live transcript during the window; any content resets the timer
-                    // so a long/paused command isn't truncated.
-                    if (text.isNotBlank()) resetWindow()
+                    // so a long/paused command isn't truncated. While the PTT button
+                    // is held there's no timer — the hold defines the window.
+                    if (text.isNotBlank() && !pttHeld) resetWindow()
                     VoiceFeedback.partial(strippedForDisplay(text))
                 }
             }
@@ -117,6 +137,9 @@ class VoicePipeline(
                     }
                 }
                 Phase.CAPTURING -> {
+                    // While the PTT button is held, ignore Vosk finals — we capture
+                    // continuously and dispatch only on release (endPushToTalk).
+                    if (pttHeld) return
                     // Inside the window: the final IS the command (it may or may not
                     // repeat the wake word, e.g. partial scanned "bifrost" then the
                     // final is the whole "bifrost turn off the lights").

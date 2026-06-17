@@ -404,8 +404,15 @@ class MainActivity : AppCompatActivity() {
  * the web push-to-talk button works on the kiosk without the WebView mic. Methods
  * run on a binder thread; `pushToTalk` just starts a service, which is thread-safe. */
 private class KioskPttBridge(private val context: Context) {
+    /** Button pressed — start capturing (skip wake word), hold open until [stop]. */
     @android.webkit.JavascriptInterface
     fun start() {
         VoiceService.pushToTalk(context)
+    }
+
+    /** Button released — stop capturing and dispatch the held command. */
+    @android.webkit.JavascriptInterface
+    fun stop() {
+        VoiceService.pushToTalkStop(context)
     }
 }

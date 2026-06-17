@@ -45,7 +45,10 @@ class VoiceService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACTION_PTT) pipeline?.beginPushToTalk()
+        when (intent?.action) {
+            ACTION_PTT -> pipeline?.beginPushToTalk()
+            ACTION_PTT_STOP -> pipeline?.endPushToTalk()
+        }
         return START_STICKY
     }
 
@@ -89,12 +92,20 @@ class VoiceService : LifecycleService() {
         private const val TAG = "VoiceService"
         private const val NOTIF_ID = 42
         private const val ACTION_PTT = "live.theundead.bifrost.kiosk.PTT"
+        private const val ACTION_PTT_STOP = "live.theundead.bifrost.kiosk.PTT_STOP"
 
-        /** Push-to-talk: tell the running voice service to start capturing a command
-         * now (skip the wake word). No-op if voice is off / mic-less. */
+        /** Push-to-talk **press**: start capturing now (skip the wake word) and hold
+         * the window open until [pushToTalkStop]. No-op if voice is off / mic-less. */
         fun pushToTalk(context: Context) {
             context.startService(
                 Intent(context, VoiceService::class.java).setAction(ACTION_PTT),
+            )
+        }
+
+        /** Push-to-talk **release**: stop capturing and dispatch the held command. */
+        fun pushToTalkStop(context: Context) {
+            context.startService(
+                Intent(context, VoiceService::class.java).setAction(ACTION_PTT_STOP),
             )
         }
 
