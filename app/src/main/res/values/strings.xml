@@ -12,6 +12,7 @@
     <string name="enable_voice">Enable voice satellite</string>
 
     <string name="scan_pairing_qr">Scan pairing QR</string>
+    <string name="grant_access">Grant mic + camera access</string>
     <string name="scan_prompt">Point the camera at the Bifrost \"Pair a device\" QR</string>
     <string name="scan_captured">Got it ✓</string>
     <string name="scan_torch_on">Torch on</string>

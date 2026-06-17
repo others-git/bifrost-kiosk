@@ -70,6 +70,15 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.saveButton.setOnClickListener { save() }
         binding.scanQrButton.setOnClickListener { startScanFlow() }
+        binding.grantAccessButton.setOnClickListener {
+            val ok = LockTask.grantPermissions(this)
+            val msg = when {
+                ok -> "Mic + camera access granted"
+                !LockTask.isDeviceOwner(this) -> "Not device owner — can't self-grant; set device owner first"
+                else -> "Couldn't grant access"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
         binding.exitLockButton.setOnClickListener {
             LockTask.stop(this)
             Toast.makeText(this, "Lock-task released for maintenance", Toast.LENGTH_LONG).show()

@@ -45,15 +45,33 @@ object LockTask {
         }.onFailure { Log.e(TAG, "addPersistentPreferredActivity failed", it) }
 
         // Device-owner can self-grant the mic so the satellite never prompts.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            runCatching {
-                dpm.setPermissionGrantState(
-                    admin, context.packageName,
-                    android.Manifest.permission.RECORD_AUDIO,
-                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
-                )
+        grantPermissions(context)
+    }
+
+    /**
+     * (Re-)apply the device-owner self-grants for the mic (and camera, used by QR
+     * pairing). Exposed so the maintenance screen can fix a tablet whose grant
+     * never ran — e.g. `dpm set-device-owner` happened *after* the app first
+     * launched, so [configurePolicies]' grant was a no-op at the time. Returns
+     * whether the mic ended up granted.
+     */
+    fun grantPermissions(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && dpm.isDeviceOwnerApp(context.packageName)) {
+            val admin = AdminReceiver.component(context)
+            for (perm in listOf(
+                android.Manifest.permission.RECORD_AUDIO,
+                android.Manifest.permission.CAMERA,
+            )) {
+                runCatching {
+                    dpm.setPermissionGrantState(
+                        admin, context.packageName, perm,
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                    )
+                }.onFailure { Log.e(TAG, "grant $perm failed", it) }
             }
         }
+        return hasMicPermission(context)
     }
 
     /** Enter lock-task + hide the status bar. No-op (logged) when not device owner. */
