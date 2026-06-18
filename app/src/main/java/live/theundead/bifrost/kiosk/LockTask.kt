@@ -114,4 +114,33 @@ object LockTask {
     fun hasMicPermission(context: Context): Boolean =
         context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Set whether the screen stays on while charging — the device-owner global
+     * setting `STAY_ON_WHILE_PLUGGED_IN`. `on` → all charge types (the screen
+     * never sleeps while plugged); `off` → 0, so it sleeps on the normal timeout
+     * even when plugged (lets a low tablet drop the screen and charge faster, and
+     * deep-doze once unplugged). The kiosk toggles this by battery level. No-op
+     * when not device owner. Returns whether it was applied.
+     */
+    fun setStayOnWhilePlugged(context: Context, on: Boolean): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(context.packageName)) return false
+        // Bitmask of charge types that keep the screen on: AC|USB|WIRELESS = 7.
+        val value = if (on) {
+            (android.os.BatteryManager.BATTERY_PLUGGED_AC or
+                android.os.BatteryManager.BATTERY_PLUGGED_USB or
+                android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS).toString()
+        } else {
+            "0"
+        }
+        return runCatching {
+            dpm.setGlobalSetting(
+                AdminReceiver.component(context),
+                android.provider.Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                value,
+            )
+            true
+        }.onFailure { Log.e(TAG, "setStayOnWhilePlugged failed", it) }.getOrDefault(false)
+    }
 }

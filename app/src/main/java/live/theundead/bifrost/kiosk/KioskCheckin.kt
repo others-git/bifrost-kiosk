@@ -22,13 +22,32 @@ class KioskCheckin(
     /** Result of a check-in: a queued command and/or the hub-assigned room. */
     data class Result(val command: String?, val room: String?)
 
+    /** Battery / power telemetry sent with the heartbeat. Any field may be null
+     * (a desktop "kiosk" has no battery; some props aren't always available). */
+    data class Battery(
+        val level: Int?,
+        val charging: Boolean?,
+        val voltageMv: Int?,
+        val currentUa: Int?,
+        val tempDeciC: Int?,
+        val source: String?,
+    )
+
     /** Heartbeat; returns the queued command + assigned room, or null on failure. */
-    fun checkin(appVersion: String, screenOn: Boolean): Result? {
+    fun checkin(appVersion: String, screenOn: Boolean, battery: Battery? = null): Result? {
         if (serverBase.isBlank() || apiKey.isBlank()) return null
         val url = URL(serverBase.trimEnd('/') + "/api/kiosks/checkin")
         val body = JSONObject().apply {
             put("app_version", appVersion)
             put("screen_on", screenOn)
+            battery?.let { b ->
+                b.level?.let { put("battery_level", it) }
+                b.charging?.let { put("battery_charging", it) }
+                b.voltageMv?.let { put("battery_voltage_mv", it) }
+                b.currentUa?.let { put("battery_current_ua", it) }
+                b.tempDeciC?.let { put("battery_temp_dc", it) }
+                b.source?.let { put("power_source", it) }
+            }
         }.toString()
 
         var conn: HttpURLConnection? = null
