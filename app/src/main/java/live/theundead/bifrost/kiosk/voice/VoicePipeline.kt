@@ -35,7 +35,7 @@ class VoicePipeline(
     // the command audio (it implements CommandTranscriber) so we can hand the clip
     // to server-side STT for accuracy, falling back to the Vosk transcript.
     private val engine: SpeechEngine = HybridSpeechEngine(context, prefs),
-    private val tts: TtsPlayer = TtsPlayer(context),
+    private val tts: TtsPlayer = TtsPlayer(context, prefs),
     private val scheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(1),
 ) : SpeechEngine.Listener {
 

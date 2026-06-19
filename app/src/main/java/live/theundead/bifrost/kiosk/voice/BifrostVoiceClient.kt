@@ -79,6 +79,45 @@ class BifrostVoiceClient(
     }
 
     /**
+     * Synthesize spoken audio for [text] via `POST /api/voice/speak` and return
+     * the raw audio bytes (whatever container the hub's TTS produced — typically
+     * wav). Returns **null** on any failure — no TTS model configured (503),
+     * upstream error, or transport failure — so the caller can fall back to
+     * on-device TTS and never go silent. Blocking — invoke off the main thread.
+     */
+    fun speak(text: String): ByteArray? {
+        if (text.isBlank()) return null
+        val url = URL(serverBase.trimEnd('/') + SPEAK_PATH)
+        val body = JSONObject().put("text", text).toString()
+
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 30_000 // synthesis can take a beat
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "audio/*")
+                if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+            conn.outputStream.use { it.write(body.toByteArray()) }
+
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                Log.w(TAG, "voice speak HTTP $code — falling back to on-device TTS")
+                return null
+            }
+            conn.inputStream.use { it.readBytes() }
+        } catch (e: Exception) {
+            Log.w(TAG, "voice speak failed — falling back to on-device TTS", e)
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /**
      * Server-side STT: POST the captured command [wav] (16 kHz mono WAV) to
      * `/api/voice/listen` as multipart, with optional [room] context. Returns
      * **null to signal "fall back to [command]"** — that covers a 503 (no
@@ -153,5 +192,6 @@ class BifrostVoiceClient(
     companion object {
         private const val TAG = "BifrostVoiceClient"
         private const val LISTEN_PATH = "/api/voice/listen"
+        private const val SPEAK_PATH = "/api/voice/speak"
     }
 }
