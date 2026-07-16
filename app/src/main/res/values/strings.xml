@@ -21,6 +21,7 @@
 
     <string name="save">Save &amp; relaunch kiosk</string>
     <string name="exit_lock">Exit lock-task (maintenance)</string>
+    <string name="release_owner">Release device ownership (re-provision)</string>
     <string name="enter_pin">Enter maintenance PIN</string>
     <string name="wrong_pin">Wrong PIN</string>
 

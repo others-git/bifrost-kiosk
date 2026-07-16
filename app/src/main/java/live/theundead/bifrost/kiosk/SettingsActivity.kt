@@ -62,11 +62,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.exitPin.setText(prefs.exitPin)
         binding.voiceEnabled.isChecked = prefs.voiceEnabled
 
-        binding.statusText.text = buildString {
-            append("device owner: ").append(LockTask.isDeviceOwner(this@SettingsActivity))
-            append("\nmic granted: ").append(LockTask.hasMicPermission(this@SettingsActivity))
-            append("\npkg: ").append(packageName)
-        }
+        renderStatus()
 
         binding.saveButton.setOnClickListener { save() }
         binding.scanQrButton.setOnClickListener { startScanFlow() }
@@ -83,6 +79,55 @@ class SettingsActivity : AppCompatActivity() {
             LockTask.stop(this)
             Toast.makeText(this, "Lock-task released for maintenance", Toast.LENGTH_LONG).show()
         }
+        binding.releaseOwnerButton.setOnClickListener { confirmReleaseOwnership() }
+    }
+
+    /** Re-provisioning escape hatch: relinquish device ownership so the app can
+     * be uninstalled (Android refuses to uninstall a device owner) — the only
+     * way to swap to a differently-signed build. Confirmed, because the tablet
+     * loses hard-pinning until `dpm set-device-owner` runs again. */
+    private fun confirmReleaseOwnership() {
+        if (!LockTask.isDeviceOwner(this)) {
+            toast("Not device owner — nothing to release")
+            return
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Release device ownership?")
+            .setMessage(
+                "The kiosk loses hard-pinning and self-granting until ownership is " +
+                    "set again over adb (dpm set-device-owner). Only do this to " +
+                    "re-provision — e.g. replacing the app with a differently-signed build.",
+            )
+            .setPositiveButton("Release") { _, _ ->
+                val ok = LockTask.releaseDeviceOwnership(this)
+                toast(if (ok) "Ownership released — the app can now be uninstalled" else "Couldn't release ownership")
+                if (ok) renderStatus()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** The maintenance status readout — one renderer so it can't drift between
+     * screen-open and post-release-ownership refreshes. */
+    private fun renderStatus() {
+        binding.statusText.text = buildString {
+            append("device owner: ").append(LockTask.isDeviceOwner(this@SettingsActivity))
+            append("\nmic granted: ").append(LockTask.hasMicPermission(this@SettingsActivity))
+            append("\npkg: ").append(packageName)
+        }
+    }
+
+    /** Relaunch the kiosk with CLEAR_TASK so MainActivity is *recreated* — its
+     * onCreate seeds the fresh `bfr_key` cookie and reloads against the current
+     * URL. Both the Save and QR-pairing paths must use this (a plain launch
+     * intent just foregrounds the stale instance, which keeps showing the
+     * password prompt). */
+    private fun relaunchKiosk() {
+        packageManager.getLaunchIntentForPackage(packageName)?.let {
+            it.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(it)
+        }
+        finish()
     }
 
     private fun save() {
@@ -99,14 +144,7 @@ class SettingsActivity : AppCompatActivity() {
         if (prefs.voiceEnabled) VoiceService.start(this) else VoiceService.stop(this)
 
         Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
-        // Relaunch the kiosk so the new URL/policies take hold. CLEAR_TASK forces
-        // MainActivity to be *recreated* (its onCreate reloads the dashboard with
-        // the new URL) — without it, the launcher intent just brings the existing
-        // instance forward and the WebView keeps the old endpoint.
-        val intent = packageManager.getLaunchIntentForPackage(packageName)
-        intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
-        finish()
+        relaunchKiosk()
     }
 
     // --- Pairing-QR scan → redeem → save → reload --------------------------
@@ -171,9 +209,7 @@ class SettingsActivity : AppCompatActivity() {
                 binding.dashboardUrl.setText(prefs.dashboardUrl)
 
                 toast("Paired ✓")
-                // Relaunch the kiosk so the WebView loads against the new server.
-                startActivity(packageManager.getLaunchIntentForPackage(packageName))
-                finish()
+                relaunchKiosk()
             }
             EnrollmentClient.Result.Invalid ->
                 toast("Pairing code invalid or expired — show a fresh QR")

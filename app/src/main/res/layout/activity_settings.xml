@@ -135,6 +135,15 @@
             android:layout_marginTop="8dp"
             android:text="@string/exit_lock" />
 
+        <Button
+            android:id="@+id/releaseOwnerButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#cc6666"
+            android:text="@string/release_owner" />
+
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"

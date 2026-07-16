@@ -27,6 +27,12 @@ class KioskCommandStream(
     @Volatile private var running = false
     private var worker: Thread? = null
 
+    /** The in-flight connection, so [stop] can sever it immediately — a thread
+     * blocked in readLine ignores interrupt, and without the disconnect a
+     * stopped stream would linger (and could deliver one stale command) for up
+     * to the read timeout while its replacement is already running. */
+    @Volatile private var conn: HttpURLConnection? = null
+
     fun start() {
         if (running || serverBase.isBlank() || apiKey.isBlank()) return
         running = true
@@ -35,6 +41,7 @@ class KioskCommandStream(
 
     fun stop() {
         running = false
+        runCatching { conn?.disconnect() } // unblocks a parked readLine now
         worker?.interrupt()
         worker = null
     }
@@ -62,6 +69,7 @@ class KioskCommandStream(
     private fun readStream() {
         val url = URL(serverBase.trimEnd('/') + "/api/kiosks/stream")
         val conn = (url.openConnection() as HttpURLConnection).apply {
+            this@KioskCommandStream.conn = this
             requestMethod = "GET"
             connectTimeout = 10_000
             // Long-lived, but never infinite: the server keep-alives every 15s,
@@ -88,7 +96,9 @@ class KioskCommandStream(
                         line.startsWith("event:") -> event = line.substringAfter("event:").trim()
                         line.startsWith("data:") -> {
                             val data = line.substringAfter("data:").trim()
-                            if (event == "command" && data.isNotEmpty()) onCommand(data)
+                            // Re-check `running`: a line already in flight when
+                            // stop() was called must not fire on a dead stream.
+                            if (running && event == "command" && data.isNotEmpty()) onCommand(data)
                         }
                         line.isEmpty() -> event = "message" // end of one event
                     }
@@ -96,6 +106,7 @@ class KioskCommandStream(
             }
         } finally {
             conn.disconnect()
+            this.conn = null
         }
     }
 

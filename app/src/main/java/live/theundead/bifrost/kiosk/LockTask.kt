@@ -46,7 +46,23 @@ object LockTask {
 
         // Device-owner can self-grant the mic so the satellite never prompts.
         grantPermissions(context)
+
+        // OS updates install only in a nightly window — a wall fixture must
+        // never reboot itself for a vendor update in the middle of the day.
+        runCatching {
+            dpm.setSystemUpdatePolicy(
+                admin,
+                android.app.admin.SystemUpdatePolicy.createWindowedInstallPolicy(
+                    OS_UPDATE_WINDOW_START_MIN,
+                    OS_UPDATE_WINDOW_END_MIN,
+                ),
+            )
+        }.onFailure { Log.e(TAG, "setSystemUpdatePolicy failed", it) }
     }
+
+    /** OS-update install window: 03:00–05:00 local (minutes since midnight). */
+    private const val OS_UPDATE_WINDOW_START_MIN = 3 * 60
+    private const val OS_UPDATE_WINDOW_END_MIN = 5 * 60
 
     /**
      * (Re-)apply the device-owner self-grants for the mic (and camera, used by QR
@@ -114,6 +130,54 @@ object LockTask {
     fun hasMicPermission(context: Context): Boolean =
         context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+
+    /** Sleep the display now (the kiosk has no keyguard, so lockNow just turns
+     * it off). The one shared primitive behind the "sleep" command — used by
+     * the activity's handler and the LinkService fallback. No-op (false) when
+     * not device owner. */
+    fun sleepDisplay(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(context.packageName)) return false
+        return runCatching {
+            dpm.lockNow()
+            true
+        }.onFailure { Log.e(TAG, "lockNow failed", it) }.getOrDefault(false)
+    }
+
+    /** Light the display: a brief ACQUIRE_CAUSES_WAKEUP lock is the actual
+     * nudge (FULL_WAKE_LOCK is a no-op on modern Android). The shared half of
+     * the "wake" command; a caller with a window adds the turn-screen-on flags
+     * around it (see MainActivity.wakeScreen). */
+    @Suppress("DEPRECATION")
+    fun nudgeDisplayOn(context: Context) {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val wl = pm.newWakeLock(
+            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+            "bifrost:wake",
+        )
+        runCatching { wl.acquire(3_000L) }
+    }
+
+    /**
+     * Relinquish device ownership — only the owner app itself can. The
+     * re-provisioning escape hatch behind the maintenance screen: swapping to a
+     * differently-signed build (debug ↔ release) requires uninstall, and Android
+     * refuses to uninstall a device owner, so the sequence is release ownership →
+     * uninstall → install → `dpm set-device-owner` again. Drops status-bar
+     * disable and lock task first so the tablet isn't left pinned by a
+     * non-owner. Returns whether ownership was actually cleared.
+     */
+    fun releaseDeviceOwnership(activity: Activity): Boolean {
+        val dpm = activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(activity.packageName)) return false
+        stop(activity)
+        return runCatching {
+            @Suppress("DEPRECATION")
+            dpm.clearDeviceOwnerApp(activity.packageName)
+            !dpm.isDeviceOwnerApp(activity.packageName)
+        }.onFailure { Log.e(TAG, "clearDeviceOwnerApp failed", it) }.getOrDefault(false)
+    }
 
     /**
      * Set whether the screen stays on while charging — the device-owner global

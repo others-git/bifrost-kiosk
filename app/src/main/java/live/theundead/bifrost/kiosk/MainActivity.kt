@@ -1,7 +1,6 @@
 package live.theundead.bifrost.kiosk
 
 import android.annotation.SuppressLint
-import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,7 +11,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.view.View
 import android.webkit.CookieManager
 import java.util.concurrent.Executors
@@ -52,9 +50,15 @@ class MainActivity : AppCompatActivity() {
      * a sleeping kiosk; an Activity-owned loop freezes with the cached process). */
     private val workExecutor = Executors.newSingleThreadExecutor()
 
-    /** De-dup: a command arrives via the stream AND lingers as the heartbeat fallback. */
-    private var lastCommand: String? = null
-    private var lastCommandAt = 0L
+    /** OUR CommandBus listener, kept as a reference so onDestroy can clear the
+     * slot only when it still points at us — during a CLEAR_TASK relaunch the
+     * NEW instance's onCreate can run before the OLD instance's onDestroy, and
+     * an unconditional null would silently detach the live activity. */
+    private val busListener: (String) -> Unit = { handleCommand(it) }
+
+    /** A second "update" within the dedup window can still slip through while a
+     * long download is in flight — never run two installer sessions at once. */
+    @Volatile private var updateInFlight = false
 
     /** Logs the outcome of a self-update install (on success the process is replaced,
      * so this mostly surfaces failures / a missing device-owner privilege). */
@@ -121,7 +125,7 @@ class MainActivity : AppCompatActivity() {
         maybeStartVoice()
         // Consume controller commands from the LinkService — the screen and
         // WebView actions live here; the service owns the network loops.
-        CommandBus.listener = { cmd -> handleCommand(cmd) }
+        CommandBus.listener = busListener
         LinkService.start(this)
         ContextCompat.registerReceiver(
             this,
@@ -133,15 +137,10 @@ class MainActivity : AppCompatActivity() {
 
     // ---- controller commands (delivered by LinkService via CommandBus) -------
 
-    /** Act on a controller command (from the live stream or the heartbeat fallback). */
+    /** Act on a controller command. Filtering and de-dup happen upstream in
+     * [LinkService.deliver] — the delivery source — so both this path and the
+     * service's own fallback share one guard that survives activity recreation. */
     private fun handleCommand(cmd: String) {
-        // The same command can arrive twice — pushed live, then again as the
-        // heartbeat's pending fallback. Ignore an identical repeat within the window.
-        if (cmd.isBlank() || cmd == "null") return // empty / sentinel — nothing queued
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (cmd == lastCommand && now - lastCommandAt < COMMAND_DEDUP_MS) return
-        lastCommand = cmd
-        lastCommandAt = now
         when (cmd) {
             "lock" -> signOut()
             "sleep" -> { sleepScreen(); reportStateSoon() }
@@ -159,11 +158,21 @@ class MainActivity : AppCompatActivity() {
 
     /** Pull + install the latest APK the hub has cached (device-owner silent install). */
     private fun startUpdate() {
+        if (updateInFlight) {
+            android.util.Log.i("MainActivity", "update already in flight — ignoring repeat")
+            return
+        }
+        updateInFlight = true
         val server = prefs.serverBase
         val key = prefs.apiKey
         workExecutor.execute {
-            val result = KioskUpdater(applicationContext, server, key).update()
-            android.util.Log.i("MainActivity", "update: $result")
+            try {
+                val result = KioskUpdater(applicationContext, server, key).update()
+                android.util.Log.i("MainActivity", "update: $result")
+            } finally {
+                // On success the process is replaced anyway; this covers failures.
+                updateInFlight = false
+            }
         }
     }
 
@@ -175,26 +184,20 @@ class MainActivity : AppCompatActivity() {
         binding.webview.loadUrl(prefs.dashboardUrl)
     }
 
-    /** Sleep the display. Device-owner can lock now; the kiosk has no keyguard so it just sleeps. */
+    /** Sleep the display — the shared LockTask primitive (also the LinkService
+     * fallback's), so the two paths can't drift. */
     private fun sleepScreen() {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        runCatching { dpm.lockNow() }
+        LockTask.sleepDisplay(this)
     }
 
     /** Turn the display on for a remote "wake". `setTurnScreenOn`/`setShowWhenLocked`
      * are the modern replacement for the (no-op-on-Android-15) FULL_WAKE_LOCK; the
-     * brief ACQUIRE_CAUSES_WAKEUP lock is the actual nudge. We set the turn-on flags
+     * shared LockTask nudge is the actual wake-up. We set the turn-on flags
      * **only for this wake** and clear them shortly after, so a stray relaunch
      * doesn't light the screen. */
     private fun wakeScreen() {
         setScreenWakeFlags(true)
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        @Suppress("DEPRECATION")
-        val wl = pm.newWakeLock(
-            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-            "bifrost:wake",
-        )
-        runCatching { wl.acquire(3_000L) }
+        LockTask.nudgeDisplayOn(this)
         // Scope the turn-on behaviour to this wake action.
         handler.postDelayed({ setScreenWakeFlags(false) }, 3_000L)
     }
@@ -334,6 +337,30 @@ class MainActivity : AppCompatActivity() {
         LinkService.start(this)
     }
 
+    // The LinkService keeps this process alive while the screen is off — good
+    // for receiving "wake", but it means the WebView would keep running the
+    // dashboard (JS timers, SSE stream, clock renders) against a dark panel all
+    // night. Pause it with the screen; the dashboard resumes and its SSE
+    // reconnects the moment the display comes back.
+    //
+    // NOT when finishing: pauseTimers() is PROCESS-global (all WebViews), and
+    // during a CLEAR_TASK relaunch the dying instance's onStop can run AFTER
+    // the new instance's onStart — an unguarded pause would freeze the fresh
+    // dashboard's JS indefinitely.
+    override fun onStop() {
+        if (!isFinishing) {
+            binding.webview.onPause()
+            binding.webview.pauseTimers()
+        }
+        super.onStop()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        binding.webview.resumeTimers()
+        binding.webview.onResume()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) applyImmersive()
@@ -359,7 +386,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(retryRunnable)
-        CommandBus.listener = null
+        // Only clear the slot if it's still OURS — a CLEAR_TASK relaunch can run
+        // the new instance's onCreate before this onDestroy, and nulling
+        // unconditionally would detach the live activity from the LinkService.
+        if (CommandBus.listener === busListener) CommandBus.listener = null
         runCatching { unregisterReceiver(installResultReceiver) }
         workExecutor.shutdownNow()
         VoiceFeedback.detach(binding.webview)
@@ -371,14 +401,6 @@ class MainActivity : AppCompatActivity() {
         /** Auto-retry cadence: first retry ~5s, doubling up to ~20s, hands-free. */
         private const val RETRY_MIN_MS = 5_000L
         private const val RETRY_MAX_MS = 20_000L
-
-        /** Ignore an identical command repeated within this window. The only
-         * legitimate echo is one command arriving twice — pushed live over the
-         * stream, then again as the next heartbeat's pending fallback (the hub
-         * clears `pending_command` on that delivery) — so the window just needs
-         * to cover one heartbeat cadence (10s) plus slack. Any wider and it
-         * swallows deliberate repeats ("Wake did nothing, tap Wake again"). */
-        private const val COMMAND_DEDUP_MS = 15_000L
     }
 }
 
