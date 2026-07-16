@@ -123,7 +123,7 @@ class LinkService : Service() {
         Log.w(TAG, "no command listener — handling '$cmd' in the service")
         when (cmd) {
             "sleep" -> LockTask.sleepDisplay(this)
-            "wake" -> LockTask.nudgeDisplayOn(this)
+            "wake" -> DisplayPower.wake(this)
             "update" -> {
                 val server = prefs.serverBase
                 val key = prefs.apiKey

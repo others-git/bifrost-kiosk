@@ -127,6 +127,10 @@ class MainActivity : AppCompatActivity() {
         // WebView actions live here; the service owns the network loops.
         CommandBus.listener = busListener
         LinkService.start(this)
+        // A remote wake can also land on a FRESH launch (activity was gone —
+        // the LinkService fallback path); arm the turn-screen-on flags so the
+        // first resume lights the panel, same as the onNewIntent path.
+        if (intent?.getBooleanExtra(DisplayPower.EXTRA_WAKE, false) == true) armScreenWake()
         ContextCompat.registerReceiver(
             this,
             installResultReceiver,
@@ -190,15 +194,26 @@ class MainActivity : AppCompatActivity() {
         LockTask.sleepDisplay(this)
     }
 
-    /** Turn the display on for a remote "wake". `setTurnScreenOn`/`setShowWhenLocked`
-     * are the modern replacement for the (no-op-on-Android-15) FULL_WAKE_LOCK; the
-     * shared LockTask nudge is the actual wake-up. We set the turn-on flags
-     * **only for this wake** and clear them shortly after, so a stray relaunch
-     * doesn't light the screen. */
+    /** Turn the display on for a remote "wake" — via [DisplayPower.wake]: the
+     * screen only turns on when an activity with `setTurnScreenOn(true)`
+     * becomes visible, so the wake RELAUNCHES this activity with a wake extra
+     * (see [onNewIntent]); setting the flag on a stopped instance and hoping a
+     * deprecated wake lock lights the panel silently no-ops on Android 15. */
     private fun wakeScreen() {
+        DisplayPower.wake(this)
+    }
+
+    /** singleTask: a remote wake's relaunch lands here while the activity is
+     * stopped (screen off). Arm the turn-screen-on flags BEFORE the resume that
+     * follows — the resume is what actually lights the display — and disarm
+     * shortly after so a stray relaunch never turns the screen on. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(DisplayPower.EXTRA_WAKE, false)) armScreenWake()
+    }
+
+    private fun armScreenWake() {
         setScreenWakeFlags(true)
-        LockTask.nudgeDisplayOn(this)
-        // Scope the turn-on behaviour to this wake action.
         handler.postDelayed({ setScreenWakeFlags(false) }, 3_000L)
     }
 
@@ -217,6 +232,16 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
         binding.webview.apply {
+            // A wall fixture is an appliance, not a document: no elastic
+            // overscroll stretch ("nudge") at scroll bounds, no overlay
+            // scrollbars flashing on swipes, and no long-press text selection
+            // (double-tap selection is suppressed web-side via user-select CSS).
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
+            isLongClickable = false
+            setOnLongClickListener { true }
+            isHapticFeedbackEnabled = false
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
