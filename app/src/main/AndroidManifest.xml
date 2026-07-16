@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- LinkService: the hub link must survive screen-off (presence wake). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Haptic confirmation when the pairing QR decodes (ScanActivity/BeepManager). -->
@@ -65,6 +67,18 @@
             android:name=".voice.VoiceService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- The hub link (heartbeat + command stream) as a foreground service, so
+             a screen-off kiosk keeps its process unfrozen and a presence "wake"
+             can actually arrive. specialUse: a kiosk↔hub companion link. -->
+        <service
+            android:name=".LinkService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="hub-link" />
+        </service>
 
         <!-- Device-owner admin. Referenced as <pkg>/.AdminReceiver in dpm set-device-owner. -->
         <receiver

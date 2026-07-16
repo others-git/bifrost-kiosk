@@ -46,12 +46,11 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    /** Heartbeat (kiosk check-in) runs off the main thread; commands dispatch back on it. */
-    private val checkinExecutor = Executors.newSingleThreadExecutor()
-    private val heartbeatRunnable = Runnable { doHeartbeat() }
-
-    /** Live server→kiosk command stream (instant commands; heartbeat is the fallback). */
-    private var commandStream: KioskCommandStream? = null
+    /** Off-main-thread work (self-update install). The hub link itself — the
+     * heartbeat + command stream — lives in [LinkService], a foreground service,
+     * so it keeps running while the screen is off (a presence "wake" must reach
+     * a sleeping kiosk; an Activity-owned loop freezes with the cached process). */
+    private val workExecutor = Executors.newSingleThreadExecutor()
 
     /** De-dup: a command arrives via the stream AND lingers as the heartbeat fallback. */
     private var lastCommand: String? = null
@@ -120,8 +119,10 @@ class MainActivity : AppCompatActivity() {
         })
 
         maybeStartVoice()
-        startHeartbeat()
-        startCommandStream()
+        // Consume controller commands from the LinkService — the screen and
+        // WebView actions live here; the service owns the network loops.
+        CommandBus.listener = { cmd -> handleCommand(cmd) }
+        LinkService.start(this)
         ContextCompat.registerReceiver(
             this,
             installResultReceiver,
@@ -130,80 +131,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // ---- kiosk check-in (heartbeat + controller commands) -------------------
-
-    /** Begin (or restart) the periodic check-in that registers this tablet with the hub. */
-    private fun startHeartbeat() {
-        handler.removeCallbacks(heartbeatRunnable)
-        handler.post(heartbeatRunnable)
-    }
-
-    /** Open the live command stream so controller commands arrive instantly. */
-    private fun startCommandStream() {
-        commandStream?.stop()
-        commandStream = KioskCommandStream(prefs.serverBase, prefs.apiKey) { cmd ->
-            handler.post { handleCommand(cmd) }
-        }.also { it.start() }
-    }
-
-    private fun doHeartbeat() {
-        postCheckin()
-        // Re-arm the periodic ping (single chain — `postCheckin` never schedules).
-        handler.removeCallbacks(heartbeatRunnable)
-        handler.postDelayed(heartbeatRunnable, CHECKIN_MS)
-    }
-
-    /** Send one check-in now (screen + battery state) and act on any reply. Does
-     * NOT touch the periodic schedule, so it's safe to fire off-cadence — e.g.
-     * right after a sleep/wake so the hub sees the new screen state immediately
-     * instead of waiting for the next poll. */
-    private fun postCheckin() {
-        val screenOn = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
-        val battery = readBattery()
-        applyDozePolicy(battery.level, battery.source != "none")
-        val server = prefs.serverBase
-        val key = prefs.apiKey
-        checkinExecutor.execute {
-            val res =
-                KioskCheckin(server, key).checkin(BuildConfig.VERSION_NAME, screenOn, battery)
-                    ?: return@execute
-            handler.post {
-                // Adopt the hub-assigned room as the voice context (location).
-                res.room?.let { if (it != prefs.roomContext) prefs.roomContext = it }
-                res.command?.let { handleCommand(it) }
-            }
-        }
-    }
-
-    /** Snapshot battery + power state from the sticky battery broadcast plus the
-     * instantaneous current. Used for the hub's per-kiosk power telemetry. */
-    private fun readBattery(): KioskCheckin.Battery {
-        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = intent?.let {
-            val l = it.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
-            val scale = it.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
-            if (l >= 0 && scale > 0) l * 100 / scale else null
-        }
-        val status = intent?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
-            status == android.os.BatteryManager.BATTERY_STATUS_FULL
-        val voltageMv = intent?.getIntExtra(android.os.BatteryManager.EXTRA_VOLTAGE, -1)
-            ?.takeIf { it > 0 }
-        val tempDeciC = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
-            ?.takeIf { it != Int.MIN_VALUE }
-        val plugged = intent?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0
-        val source = when (plugged) {
-            android.os.BatteryManager.BATTERY_PLUGGED_AC -> "ac"
-            android.os.BatteryManager.BATTERY_PLUGGED_USB -> "usb"
-            android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
-            else -> "none"
-        }
-        // Instantaneous current (µA, signed; vendors differ on sign while charging).
-        val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
-        val currentUa = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-            .takeIf { it != Int.MIN_VALUE && it != 0 }
-        return KioskCheckin.Battery(level, charging, voltageMv, currentUa, tempDeciC, source)
-    }
+    // ---- controller commands (delivered by LinkService via CommandBus) -------
 
     /** Act on a controller command (from the live stream or the heartbeat fallback). */
     private fun handleCommand(cmd: String) {
@@ -226,39 +154,14 @@ class MainActivity : AppCompatActivity() {
     /** After a sleep/wake, push the new screen state to the hub shortly after it
      * settles — so the Clients view updates immediately, not on the next poll. */
     private fun reportStateSoon() {
-        handler.postDelayed({ postCheckin() }, 800L)
-    }
-
-    /** Hysteresis state for [applyDozePolicy]: keep the screen on while plugged.
-     * Flips false below 30% and true above 70%, so it doesn't flap mid-band. */
-    private var stayAwakeWhilePlugged = true
-    /** Last value pushed to the OS, so we only write the global setting on change. */
-    private var lastStayOnApplied: Boolean? = null
-
-    /**
-     * Battery-aware screen policy (no doze-exemption — we *want* a low tablet to
-     * conserve). **While plugged in**: keep the screen on when the battery is
-     * healthy (≥70%) and let it sleep — minimal draw, charges faster — when low
-     * (<30%), with hysteresis between. **On battery**: never force stay-on, so the
-     * system's normal screen timeout auto-dozes (and deep-dozes) as usual.
-     */
-    private fun applyDozePolicy(level: Int?, plugged: Boolean) {
-        if (level != null) {
-            if (level >= STAY_AWAKE_PCT) stayAwakeWhilePlugged = true
-            else if (level < AUTO_DOZE_PCT) stayAwakeWhilePlugged = false
-        }
-        val target = plugged && stayAwakeWhilePlugged
-        if (target != lastStayOnApplied) {
-            lastStayOnApplied = target
-            LockTask.setStayOnWhilePlugged(this, target)
-        }
+        handler.postDelayed({ LinkService.checkinNow(this) }, 800L)
     }
 
     /** Pull + install the latest APK the hub has cached (device-owner silent install). */
     private fun startUpdate() {
         val server = prefs.serverBase
         val key = prefs.apiKey
-        checkinExecutor.execute {
+        workExecutor.execute {
             val result = KioskUpdater(applicationContext, server, key).update()
             android.util.Log.i("MainActivity", "update: $result")
         }
@@ -426,6 +329,9 @@ class MainActivity : AppCompatActivity() {
         LockTask.start(this)
         applyImmersive()
         maybeStartVoice()
+        // Idempotent poke: picks up a hub config change from the settings screen
+        // (the service re-targets its stream when serverBase/apiKey differ).
+        LinkService.start(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -453,10 +359,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(retryRunnable)
-        handler.removeCallbacks(heartbeatRunnable)
-        commandStream?.stop()
+        CommandBus.listener = null
         runCatching { unregisterReceiver(installResultReceiver) }
-        checkinExecutor.shutdownNow()
+        workExecutor.shutdownNow()
         VoiceFeedback.detach(binding.webview)
         binding.webview.destroy()
         super.onDestroy()
@@ -467,19 +372,13 @@ class MainActivity : AppCompatActivity() {
         private const val RETRY_MIN_MS = 5_000L
         private const val RETRY_MAX_MS = 20_000L
 
-        /** Heartbeat cadence. A cheap local-LAN poll that also carries screen +
-         * battery telemetry, so a tight cadence keeps the hub's view fresh;
-         * commands still push instantly over the stream (this is the fallback). */
-        private const val CHECKIN_MS = 10_000L
-
-        /** Battery hysteresis for the plugged-in screen policy: below this, let a
-         * plugged tablet's screen sleep so it charges faster; above [STAY_AWAKE_PCT]
-         * keep it awake/responsive (see [applyDozePolicy]). */
-        private const val AUTO_DOZE_PCT = 30
-        private const val STAY_AWAKE_PCT = 70
-
-        /** Ignore an identical command repeated within this window (stream + heartbeat overlap). */
-        private const val COMMAND_DEDUP_MS = 90_000L
+        /** Ignore an identical command repeated within this window. The only
+         * legitimate echo is one command arriving twice — pushed live over the
+         * stream, then again as the next heartbeat's pending fallback (the hub
+         * clears `pending_command` on that delivery) — so the window just needs
+         * to cover one heartbeat cadence (10s) plus slack. Any wider and it
+         * swallows deliberate repeats ("Wake did nothing, tap Wake again"). */
+        private const val COMMAND_DEDUP_MS = 15_000L
     }
 }
 

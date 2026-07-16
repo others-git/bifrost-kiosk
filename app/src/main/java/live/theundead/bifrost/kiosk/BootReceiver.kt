@@ -20,6 +20,9 @@ class BootReceiver : BroadcastReceiver() {
                 Intent(context, MainActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
+            // The hub link comes up with the device — before anyone touches it —
+            // so remote sleep/wake works from the first minute after a power cut.
+            LinkService.start(context)
             val prefs = Prefs(context)
             if (prefs.voiceEnabled) {
                 live.theundead.bifrost.kiosk.voice.VoiceService.start(context)

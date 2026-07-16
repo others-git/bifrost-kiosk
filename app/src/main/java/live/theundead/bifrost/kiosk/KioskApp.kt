@@ -17,10 +17,21 @@ class KioskApp : Application() {
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply { description = "Always-on listening for the wake word." },
             )
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    LINK_CHANNEL_ID,
+                    "Hub link",
+                    NotificationManager.IMPORTANCE_MIN,
+                ).apply {
+                    description = "Keeps the connection to the Bifrost hub alive " +
+                        "so remote sleep/wake works while the screen is off."
+                },
+            )
         }
     }
 
     companion object {
         const val VOICE_CHANNEL_ID = "voice_satellite"
+        const val LINK_CHANNEL_ID = "hub_link"
     }
 }

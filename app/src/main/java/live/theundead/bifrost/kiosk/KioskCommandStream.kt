@@ -64,7 +64,12 @@ class KioskCommandStream(
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 10_000
-            readTimeout = 0 // long-lived; the server keep-alives every 15s
+            // Long-lived, but never infinite: the server keep-alives every 15s,
+            // so 45s of silence means the connection died WITHOUT a FIN (wifi
+            // power-save while the screen is off does exactly this) — an
+            // infinite read would hang the stream forever with no reconnect,
+            // and a queued "wake" would only arrive via the heartbeat fallback.
+            readTimeout = 45_000
             setRequestProperty("Accept", "text/event-stream")
             setRequestProperty("Authorization", "Bearer $apiKey")
         }
