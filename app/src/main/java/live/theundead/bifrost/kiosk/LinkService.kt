@@ -55,6 +55,11 @@ class LinkService : Service() {
     /** The config the running stream was built with, to restart it on change. */
     private var streamConfig: Pair<String, String>? = null
 
+    /** Mic-presence monitor (hub-configured; level-only — see [NoiseMonitor]).
+     * `micConfig` mirrors the last applied (enabled, sensitivity) pair. */
+    private var noise: NoiseMonitor? = null
+    private var micConfig: Pair<Boolean, String?>? = null
+
     /** Dedup: one command can arrive twice — pushed live over the stream, then
      * again as the next heartbeat's pending fallback. */
     private var lastCommand: String? = null
@@ -89,6 +94,7 @@ class LinkService : Service() {
     override fun onDestroy() {
         if (instance === this) instance = null
         handler.removeCallbacks(heartbeatRunnable)
+        noise?.stop()
         commandStream?.stop()
         executor.shutdownNow()
         runCatching { wakeLock?.release() }
@@ -168,9 +174,40 @@ class LinkService : Service() {
             handler.post {
                 // Adopt the hub-assigned room as the voice context (location).
                 res.room?.let { if (it != prefs.roomContext) prefs.roomContext = it }
+                applyMicConfig(res.micPresence, res.micSensitivity)
                 res.command?.let { deliver(it) }
             }
         }
+    }
+
+    /** Start/stop/retune the mic-presence monitor to match the hub's config
+     * (delivered on every heartbeat). Level-only by design — see [NoiseMonitor].
+     * A sensitivity change restarts the monitor; the notification re-asserts the
+     * microphone FGS type before recording starts. */
+    private fun applyMicConfig(enabled: Boolean, sensitivity: String?) {
+        val cfg = enabled to sensitivity
+        if (cfg == micConfig) return
+        micConfig = cfg
+        noise?.stop()
+        noise = null
+        if (!enabled) {
+            startForegroundNotification()
+            return
+        }
+        // Self-heal the permission (device owner); without it stay idle —
+        // the kiosk itself is unaffected.
+        if (!LockTask.hasMicPermission(this) && !LockTask.grantPermissions(this)) {
+            Log.w(TAG, "mic presence enabled but RECORD_AUDIO not granted — idle")
+            return
+        }
+        startForegroundNotification()
+        val server = prefs.serverBase
+        val key = prefs.apiKey
+        noise = NoiseMonitor(sensitivity) { elevated, levelDb ->
+            executor.execute {
+                KioskCheckin(server, key).reportNoise(elevated, levelDb)
+            }
+        }.also { it.start() }
     }
 
     /** Snapshot battery + power state from the sticky battery broadcast plus the
@@ -235,7 +272,12 @@ class LinkService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         val paired = prefs.serverBase.isNotBlank() && prefs.apiKey.isNotBlank()
-        val text = if (paired) "Linked to hub — remote sleep/wake active" else "Not paired — waiting for setup"
+        val micActive = micConfig?.first == true && LockTask.hasMicPermission(this)
+        val text = when {
+            !paired -> "Not paired — waiting for setup"
+            micActive -> "Linked to hub — sound-level presence active (level only, no audio)"
+            else -> "Linked to hub — remote sleep/wake active"
+        }
         val notification = NotificationCompat.Builder(this, KioskApp.LINK_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
@@ -243,8 +285,11 @@ class LinkService : Service() {
             .setOngoing(true)
             .setContentIntent(tap)
             .build()
+        // Claim the microphone type only while the monitor should run (and the
+        // permission is actually held) — same contract as VoiceService.
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                (if (micActive) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
         } else {
             0
         }

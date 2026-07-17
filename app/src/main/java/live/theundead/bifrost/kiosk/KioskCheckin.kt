@@ -19,8 +19,14 @@ class KioskCheckin(
     private val serverBase: String,
     private val apiKey: String,
 ) {
-    /** Result of a check-in: a queued command and/or the hub-assigned room. */
-    data class Result(val command: String?, val room: String?)
+    /** Result of a check-in: a queued command, the hub-assigned room, and the
+     * microphone-presence config (the app starts/stops [NoiseMonitor] from it). */
+    data class Result(
+        val command: String?,
+        val room: String?,
+        val micPresence: Boolean,
+        val micSensitivity: String?,
+    )
 
     /** Battery / power telemetry sent with the heartbeat. Any field may be null
      * (a desktop "kiosk" has no battery; some props aren't always available). */
@@ -71,10 +77,44 @@ class KioskCheckin(
             Result(
                 command = json.optString("command", "").ifBlank { null },
                 room = json.optString("room", "").ifBlank { null },
+                micPresence = json.optBoolean("mic_presence", false),
+                micSensitivity = json.optString("mic_sensitivity", "").ifBlank { null },
             )
         } catch (e: Exception) {
             Log.e(TAG, "checkin failed", e)
             null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /** Report a sound-level edge (or periodic level) to the hub's noise endpoint
+     * (`POST /api/kiosks/self/noise`, `bfr_key` cookie auth — the same identity
+     * cookie the kiosk WebView carries). Fire-and-forget; blocking. */
+    fun reportNoise(elevated: Boolean, levelDb: Double): Boolean {
+        if (serverBase.isBlank() || apiKey.isBlank()) return false
+        val url = URL(serverBase.trimEnd('/') + "/api/kiosks/self/noise")
+        val body = JSONObject().apply {
+            put("elevated", elevated)
+            put("level", levelDb)
+        }.toString()
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 10_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Cookie", "bfr_key=$apiKey")
+            }
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            val ok = conn.responseCode in 200..299
+            if (!ok) Log.w(TAG, "noise report HTTP ${conn.responseCode}")
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "noise report failed", e)
+            false
         } finally {
             conn?.disconnect()
         }

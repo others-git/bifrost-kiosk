@@ -11,8 +11,8 @@ android {
         applicationId = "live.theundead.bifrost.kiosk"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.3.3"
+        versionCode = 19
+        versionName = "0.3.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Keep only the wall tablet's ABI so the Vosk native libs don't bloat the APK.
         ndk {
